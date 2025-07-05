@@ -174,11 +174,11 @@ p = heatmap(
 ```julia
 idx = sortperm([b.distance_to_minimizer[end] for b in results], rev=false)
 
-p = plot(xscale = :log10, legend = :outerright, size = (900,500), margin = 10Plots.px, ylim = (0,5))
+p = plot(xscale = :log10, legend = :outerright, size = (900,500), margin=10Plots.px, ylim = (0,5))
 for i in idx
     plot!(
         results[i].run_length, results[i].distance_to_minimizer, label = labels[i],
-        showribbon = false, lw = 2, xlim = (1,1e5),
+        showribbon=false, lw=2, xlim = (1,1e5),
         xlabel = "Iterations", ylabel = "Mean distance to minimum"
     )
 end
