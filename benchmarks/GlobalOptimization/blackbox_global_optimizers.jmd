@@ -57,13 +57,13 @@ setup = Dict(
     "OptimizationEvolutionary.ES()" => chain(OptimizationEvolutionary.ES(), isboxed=true),
     "Optim.SAMIN" => chain(SAMIN(verbosity=0), isboxed=true),
     "BBO_adaptive_de_rand_1_bin" => chain(BBO_adaptive_de_rand_1_bin(), isboxed=true),
-    "BBO_adaptive_de_rand_1_bin_radiuslimited" => chain(BBO_adaptive_de_rand_1_bin_radiuslimited(), isboxed=true),
+    "BBO_adaptive_de_rand_1_bin_radiuslimited" => chain(BBO_adaptive_de_rand_1_bin_radiuslimited(), isboxed=true), # same as BBO_adaptive_de_rand_1_bin
     "BBO_separable_nes" => chain(BBO_separable_nes(), isboxed=true),
     "BBO_de_rand_2_bin" => chain(BBO_de_rand_2_bin(), isboxed=true),
     #"BBO_xnes" => chain(BBO_xnes(), isboxed=true), # good but slow
-    #"BBO_dxnes" => chain(BBO_dxnes(), isboxed=true),
+    #"BBO_dxnes" => chain(BBO_dxnes(), isboxed=true), 
     "OptimizationMetaheuristics.ECA" => chain(OptimizationMetaheuristics.ECA(), isboxed=true),
-    #"OptimizationMetaheuristics.CGSA" => () -> chain(OptimizationMetaheuristics.CGSA(), isboxed=true),
+    #"OptimizationMetaheuristics.CGSA" => () -> chain(OptimizationMetaheuristics.CGSA(), isboxed=true), #give me strange results
     "OptimizationMetaheuristics.DE" => chain(OptimizationMetaheuristics.DE(), isboxed=true),
     "Optimisers.AdamW" => chain(Optimisers.AdamW(), isboxed=false),
     "Optimisers.RMSProp" => chain(Optimisers.RMSProp(), isboxed=false),
@@ -74,9 +74,10 @@ setup = Dict(
     "ScipyShgo"                  => chain(ScipyShgo(),               isboxed=true),
     "ScipyDirect"                => chain(ScipyDirect(),             isboxed=true),
     "ScipyBrute"                 => chain(ScipyBrute(),              isboxed=true),
-    # "NOMADOpt" => chain(NOMADOpt()),
-    # "OptimizationPRIMA.UOBYQA()" => chain(OptimizationPRIMA.UOBYQA()),
+    # "NOMADOpt" => chain(NOMADOpt()), too much printing
+    # "OptimizationPRIMA.UOBYQA()" => chain(OptimizationPRIMA.UOBYQA()), :StackOverflowError?
     # "OptimizationPRIMA.NEWUOA()" => OptimizationPRIMA.UOBYQA(),
+    #
 )
 ```
 
@@ -109,7 +110,7 @@ end
 p
 ```
 
-## Full Benchmark Run
+## Test all
 
 ```julia
 results = Vector{Union{BBOB.BenchmarkResults, Nothing}}(undef, length(setup))
