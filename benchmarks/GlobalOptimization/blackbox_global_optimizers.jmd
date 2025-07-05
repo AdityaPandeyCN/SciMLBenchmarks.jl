@@ -34,7 +34,7 @@ dimension = 3
 run_length = round.(Int, 10 .^ LinRange(1,5,30))
 
 @memoize function run_bench(algo)
-    return BBOB.benchmark(setup[algo], test_functions, run_length; Ntrials=40, dimension=dimension)
+    return BBOB.benchmark(setup[algo], test_functions, run_length; Ntrials = 40, dimension = dimension)
 end
 
 const python_optimizers = Set([
@@ -85,7 +85,7 @@ setup = Dict(
 ```julia
 @time b = BBOB.benchmark(
     chain(OptimizationMetaheuristics.CGSA(), isboxed=true),
-    test_functions[1:10], 100:500:10_000; Ntrials=10, dimension=3
+    test_functions[1:10], 100:500:10_000; Ntrials = 10, dimension = 3
 )
 
 plot(b)
@@ -104,7 +104,7 @@ sol = [BBOB.solve_problem(single_setup, f, 3, 5_000) for _ in 1:10]
 
 p = plot(f; size=(600,600), zoom=1.5)
 for s in sol
-    scatter!(s.u[1:1], s.u[2:2], label="", c="blue", marker=:xcross, markersize=5, markerstrokewidth=0)
+    scatter!(s.u[1:1], s.u[2:2], label = "", c = "blue", marker = :xcross, markersize = 5, markerstrokewidth = 0)
 end
 p
 ```
@@ -149,7 +149,7 @@ idx = sortperm([b.success_rate[end] for b in results], rev=true)
 
 p = plot(xscale=:log10, legend=:outerright, size=(700,350), margin=10Plots.px, dpi=200)
 for i in idx
-    plot!(results[i]; label=labels[i], showribbon=false, lw=2.5, xlim=(1,1e5), x=:run_length)
+    plot!(results[i]; label = labels[i], showribbon = false, lw = 2.5, xlim = (1,1e5), x = :run_length)
 end
 p
 ```
@@ -163,11 +163,11 @@ idxfunc = 1:length(test_functions)
 
 p = heatmap(
     string.(test_functions)[idxfunc], labels[idx], success_rate_per_function[idxfunc, idx]',
-    cmap=:RdYlGn,
-    xticks=:all,
-    yticks=:all,
-    xrotation=45,
-    dpi=200,
+    cmap = :RdYlGn,
+    xticks = :all,
+    yticks = :all,
+    xrotation = 45,
+    dpi = 200,
 )
 ```
 
@@ -177,9 +177,9 @@ idx = sortperm([b.distance_to_minimizer[end] for b in results], rev=false)
 p = plot(xscale=:log10, legend=:outerright, size=(900,500), margin=10Plots.px, ylim=(0,5))
 for i in idx
     plot!(
-        results[i].run_length, results[i].distance_to_minimizer; label=labels[i],
-        showribbon=false, lw=2, xlim=(1,1e5),
-        xlabel="Iterations", ylabel="Mean distance to minimum"
+        results[i].run_length, results[i].distance_to_minimizer; label = labels[i],
+        showribbon = false, lw = 2, xlim = (1,1e5),
+        xlabel = "Iterations", ylabel = "Mean distance to minimum"
     )
 end
 p
@@ -191,9 +191,9 @@ runtimes = getfield.(results, :runtime)
 runtimes = runtimes ./ runtimes[ref]
 
 bar(
-    labels, runtimes; xrotation=45, xticks=:all, ylabel="Run time relative to NM",
-    yscale=:log10, yticks=[0.1,1,10,100],
-    legend=false, margin=25Plots.px
+    labels, runtimes; xrotation = 45, xticks = :all, ylabel = "Run time relative to NM",
+    yscale = :log10, yticks = [0.1,1,10,100],
+    legend = false, margin = 25Plots.px
 )
 ```
 
