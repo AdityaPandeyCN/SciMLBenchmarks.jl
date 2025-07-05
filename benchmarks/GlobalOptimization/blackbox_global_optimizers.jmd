@@ -15,10 +15,11 @@ difficult global optima.
 ```julia
 using BlackBoxOptimizationBenchmarking, Plots, Optimization, Memoize, Statistics
 import BlackBoxOptimizationBenchmarking.Chain
+using BlackBoxOptimizationBenchmarking: BenchmarkSetup
 const BBOB = BlackBoxOptimizationBenchmarking
 
 using OptimizationBBO, OptimizationOptimJL, OptimizationEvolutionary, OptimizationNLopt
-using OptimizationMetaheuristics, OptimizationNOMAD, OptimizationPRIMA, OptimizationOptimisers, OptimizationSciPy, OptimizationPyCMA
+using OptimizationMetaheuristics, OptimizationNOMAD, OptimizationPRIMA, OptimizationOptimisers, OptimizationSciPy
 ```
 
 ```julia
@@ -32,7 +33,15 @@ test_functions = BBOB.list_functions()
 dimension = 3
 run_length = round.(Int, 10 .^ LinRange(1,5,30))
 
-@memoize run_bench(algo) = BBOB.benchmark(setup[algo], test_functions, run_length, Ntrials=40, dimension = dimension)
+@memoize function run_bench(algo)
+    return BBOB.benchmark(setup[algo], test_functions, run_length; Ntrials=40, dimension=dimension)
+end
+
+const python_optimizers = Set([
+    "ScipyDifferentialEvolution", "ScipyBasinhopping", "ScipyDualAnnealing",
+    "ScipyShgo", "ScipyDirect", "ScipyBrute"
+])
+
 ```
 
 ```julia
@@ -48,27 +57,26 @@ setup = Dict(
     "OptimizationEvolutionary.ES()" => chain(OptimizationEvolutionary.ES(), isboxed=true),
     "Optim.SAMIN" => chain(SAMIN(verbosity=0), isboxed=true),
     "BBO_adaptive_de_rand_1_bin" => chain(BBO_adaptive_de_rand_1_bin(), isboxed=true),
-    "BBO_adaptive_de_rand_1_bin_radiuslimited" => chain(BBO_adaptive_de_rand_1_bin_radiuslimited(), isboxed=true), # same as BBO_adaptive_de_rand_1_bin
+    "BBO_adaptive_de_rand_1_bin_radiuslimited" => chain(BBO_adaptive_de_rand_1_bin_radiuslimited(), isboxed=true),
     "BBO_separable_nes" => chain(BBO_separable_nes(), isboxed=true),
     "BBO_de_rand_2_bin" => chain(BBO_de_rand_2_bin(), isboxed=true),
     #"BBO_xnes" => chain(BBO_xnes(), isboxed=true), # good but slow
-    #"BBO_dxnes" => chain(BBO_dxnes(), isboxed=true), 
+    #"BBO_dxnes" => chain(BBO_dxnes(), isboxed=true),
     "OptimizationMetaheuristics.ECA" => chain(OptimizationMetaheuristics.ECA(), isboxed=true),
-    #"OptimizationMetaheuristics.CGSA" => () -> chain(OptimizationMetaheuristics.CGSA(), isboxed=true), #give me strange results
+    #"OptimizationMetaheuristics.CGSA" => () -> chain(OptimizationMetaheuristics.CGSA(), isboxed=true),
     "OptimizationMetaheuristics.DE" => chain(OptimizationMetaheuristics.DE(), isboxed=true),
     "Optimisers.AdamW" => chain(Optimisers.AdamW(), isboxed=false),
     "Optimisers.RMSProp" => chain(Optimisers.RMSProp(), isboxed=false),
     # SciPy global optimizers
     "ScipyDifferentialEvolution" => chain(ScipyDifferentialEvolution(), isboxed=true),
-    "ScipyBasinhopping" => chain(ScipyBasinhopping(), isboxed=true),
-    "ScipyDualAnnealing" => chain(ScipyDualAnnealing(), isboxed=true),
-    "ScipyShgo" => chain(ScipyShgo(), isboxed=true),
-    "ScipyDirect" => chain(ScipyDirect(), isboxed=true),
-    "ScipyBrute" => chain(ScipyBrute(), isboxed=true),
-    # "NOMADOpt" => chain(NOMADOpt()), too much printing
-    # "OptimizationPRIMA.UOBYQA()" => chain(OptimizationPRIMA.UOBYQA()), :StackOverflowError?
+    "ScipyBasinhopping"          => chain(ScipyBasinhopping(),       isboxed=true),
+    "ScipyDualAnnealing"         => chain(ScipyDualAnnealing(),      isboxed=true),
+    "ScipyShgo"                  => chain(ScipyShgo(),               isboxed=true),
+    "ScipyDirect"                => chain(ScipyDirect(),             isboxed=true),
+    "ScipyBrute"                 => chain(ScipyBrute(),              isboxed=true),
+    # "NOMADOpt" => chain(NOMADOpt()),
+    # "OptimizationPRIMA.UOBYQA()" => chain(OptimizationPRIMA.UOBYQA()),
     # "OptimizationPRIMA.NEWUOA()" => OptimizationPRIMA.UOBYQA(),
-    #
 )
 ```
 
@@ -77,7 +85,7 @@ setup = Dict(
 ```julia
 @time b = BBOB.benchmark(
     chain(OptimizationMetaheuristics.CGSA(), isboxed=true),
-    test_functions[1:10], 100:500:10_000, Ntrials=10, dimension = 3
+    test_functions[1:10], 100:500:10_000; Ntrials=10, dimension=3
 )
 
 plot(b)
@@ -91,35 +99,57 @@ f = test_functions[3]
 
 single_setup = BenchmarkSetup(NLopt.GN_CRS2_LM(), isboxed=true)
 
-sol = [BBOB.solve_problem(single_setup, f, 3, 5_000) for in in 1:10]
-@info [sol.objective < Δf + f.f_opt for sol in sol]
+sol = [BBOB.solve_problem(single_setup, f, 3, 5_000) for _ in 1:10]
+@info [s.objective < Δf + f.f_opt for s in sol]
 
-p = plot(f, size = (600,600), zoom = 1.5)
-for sol in sol
-    scatter!(sol.u[1:1], sol.u[2:2], label="", c="blue", marker = :xcross, markersize=5, markerstrokewidth=0)
+p = plot(f; size=(600,600), zoom=1.5)
+for s in sol
+    scatter!(s.u[1:1], s.u[2:2], label="", c="blue", marker=:xcross, markersize=5, markerstrokewidth=0)
 end
 p
 ```
 
-## Test all
+## Full Benchmark Run
 
 ```julia
-results = Array{BBOB.BenchmarkResults}(undef, length(setup))
+results = Vector{Union{BBOB.BenchmarkResults, Nothing}}(undef, length(setup))
 
-Threads.@threads for (i,algo) in collect(enumerate(keys(setup)))
-    results[i] = run_bench(algo)
+all_keys = collect(keys(setup))
+
+for (i, algo) in enumerate(all_keys)
+    if algo in python_optimizers
+        try
+            results[i] = run_bench(algo)
+        catch err
+            @warn "Benchmark for $algo failed – skipping" exception = err
+        end
+    end
 end
+
+Threads.@threads for (i, algo) in collect(enumerate(all_keys))
+    if !(algo in python_optimizers)
+        try
+            results[i] = run_bench(algo)
+        catch err
+            @warn "Benchmark for $algo failed – skipping" exception = err
+        end
+    end
+end
+
+labels = all_keys
+valid_idx = [i for i in eachindex(results) if results[i] !== nothing]
+results = results[valid_idx]
+labels  = labels[valid_idx]
 
 results
 ```
 
 ```julia
-labels = collect(keys(setup))
 idx = sortperm([b.success_rate[end] for b in results], rev=true)
 
-p = plot(xscale = :log10, legend = :outerright, size = (700,350), margin=10Plots.px, dpi=200)
+p = plot(xscale=:log10, legend=:outerright, size=(700,350), margin=10Plots.px, dpi=200)
 for i in idx
-    plot!(results[i], label = labels[i], showribbon=false, lw=2.5, xlim = (1,1e5), x = :run_length)
+    plot!(results[i]; label=labels[i], showribbon=false, lw=2.5, xlim=(1,1e5), x=:run_length)
 end
 p
 ```
@@ -133,24 +163,23 @@ idxfunc = 1:length(test_functions)
 
 p = heatmap(
     string.(test_functions)[idxfunc], labels[idx], success_rate_per_function[idxfunc, idx]',
-    cmap = :RdYlGn,
-    xticks = :all,
-    yticks = :all,
-    xrotation = 45,
-    dpi = 200,
+    cmap=:RdYlGn,
+    xticks=:all,
+    yticks=:all,
+    xrotation=45,
+    dpi=200,
 )
 ```
 
 ```julia
-labels = collect(keys(setup))
 idx = sortperm([b.distance_to_minimizer[end] for b in results], rev=false)
 
-p = plot(xscale = :log10, legend = :outerright, size = (900,500), margin=10Plots.px, ylim = (0,5))
+p = plot(xscale=:log10, legend=:outerright, size=(900,500), margin=10Plots.px, ylim=(0,5))
 for i in idx
     plot!(
-        results[i].run_length, results[i].distance_to_minimizer, label = labels[i],
-        showribbon=false, lw=2, xlim = (1,1e5),
-        xlabel = "Iterations", ylabel = "Mean distance to minimum"
+        results[i].run_length, results[i].distance_to_minimizer; label=labels[i],
+        showribbon=false, lw=2, xlim=(1,1e5),
+        xlabel="Iterations", ylabel="Mean distance to minimum"
     )
 end
 p
@@ -162,9 +191,9 @@ runtimes = getfield.(results, :runtime)
 runtimes = runtimes ./ runtimes[ref]
 
 bar(
-    labels, runtimes, xrotation = :45, xticks = :all, ylabel = "Run time relative to NM",
-    yscale = :log10, yticks = [0.1,1,10,100],
-    legend = false, margin = 25Plots.px
+    labels, runtimes; xrotation=45, xticks=:all, ylabel="Run time relative to NM",
+    yscale=:log10, yticks=[0.1,1,10,100],
+    legend=false, margin=25Plots.px
 )
 ```
 
