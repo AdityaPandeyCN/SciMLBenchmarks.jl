@@ -147,9 +147,9 @@ results
 ```julia
 idx = sortperm([b.success_rate[end] for b in results], rev=true)
 
-p = plot(xscale = :log10, legend = :outerright, size = (700,350), margin = 10Plots.px, dpi = 200)
+p = plot(xscale = :log10, legend = :outerright, size = (700,350), margin=10Plots.px, dpi=200)
 for i in idx
-    plot!(results[i], label = labels[i], showribbon = false, lw = 2.5, xlim = (1,1e5), x = :run_length)
+    plot!(results[i], label = labels[i], showribbon=false, lw=2.5, xlim = (1,1e5), x = :run_length)
 end
 p
 ```
