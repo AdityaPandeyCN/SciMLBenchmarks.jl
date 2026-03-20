@@ -1,0 +1,348 @@
+---
+title: GPU Particle Swarm Global Optimizer Benchmarks
+author: Utkarsh R, Aditya Pandey
+---
+
+In this benchmark we compare the PSO variants in
+[ParallelParticleSwarms.jl](https://github.com/SciML/ParallelParticleSwarms.jl)
+against top CPU global optimizers from the reference
+[Black-Box Global Optimizer Benchmarks](https://docs.sciml.ai/SciMLBenchmarksOutput/stable/GlobalOptimization/blackbox_global_optimizers/)
+using the same [BlackBoxOptimizationBenchmarking.jl](https://github.com/jonathanBieler/BlackBoxOptimizationBenchmarking.jl)
+suite and [Optimization.jl](https://github.com/SciML/Optimization.jl) interface.
+This tests both iterations and wall-clock time vs accuracy.
+
+## Setup
+```julia
+using BlackBoxOptimizationBenchmarking, Optimization, Memoize, Statistics
+import BlackBoxOptimizationBenchmarking: Chain, BenchmarkSetup, BenchmarkResults,
+    BBOBFunction, pinit
+const BBOB = BlackBoxOptimizationBenchmarking
+
+using OptimizationBBO, OptimizationOptimJL, OptimizationNLopt, OptimizationMetaheuristics
+using OptimizationSciPy
+
+using ParallelParticleSwarms
+const ParallelPSOKernel = ParallelParticleSwarms.ParallelPSOKernel
+const ParallelSyncPSOKernel = ParallelParticleSwarms.ParallelSyncPSOKernel
+const SerialPSO = ParallelParticleSwarms.SerialPSO
+const ParallelPSOArray = ParallelParticleSwarms.ParallelPSOArray
+const HybridPSO = ParallelParticleSwarms.HybridPSO
+
+using CUDA
+using KernelAbstractions: CPU
+using StaticArrays, LinearAlgebra
+```
+
+The kernel PSO variants need SVector/Float32 and `OptimizationProblem{false}`,
+so they can't go through BBOB's BenchmarkSetup. We provide a thin solve wrapper
+and a benchmark loop that returns the same shape as `BBOB.BenchmarkResults`.
+```julia
+const BBOB_LB = SVector{3}(ntuple(_ -> -5.0f0, Val(3)))
+const BBOB_UB = SVector{3}(ntuple(_ ->  5.0f0, Val(3)))
+const BBOB_X0 = SVector{3}(ntuple(_ ->  0.0f0, Val(3)))
+
+function pso_solve(f, total_evals, opt)
+    loss = OptimizationFunction((u, _) -> Float32(f(Float64.(u))))
+    prob = OptimizationProblem{false}(loss, BBOB_X0; lb = BBOB_LB, ub = BBOB_UB)
+    np = opt isa HybridPSO ? opt.pso.num_particles : opt.num_particles
+    iters = max(1, total_evals ÷ np)
+    opt isa HybridPSO ?
+        solve(prob, opt; maxiters = iters, local_maxiters = 10) :
+        solve(prob, opt; maxiters = iters)
+end
+
+function pso_benchmark(f_list, run_lengths, opt; Ntrials = 40, dimension = 3, Δf = 1e-6)
+    nf, nr = length(f_list), length(run_lengths)
+    success = zeros(nf, nr)
+    dist    = zeros(nf, nr)
+    t0 = time()
+    for (fi, f) in enumerate(f_list)
+        x_opt = Float32.(f.x_opt[1:dimension])
+        for (ri, rl) in enumerate(run_lengths)
+            hits = 0; dsum = 0.0
+            for _ in 1:Ntrials
+                sol = pso_solve(f, rl, opt)
+                hits += Int(sol.objective < f.f_opt + Δf)
+                dsum += norm(Float64.(sol.u) .- Float64.(x_opt))
+            end
+            success[fi, ri] = hits / Ntrials
+            dist[fi, ri]    = dsum / Ntrials
+        end
+    end
+    (run_length = run_lengths,
+     success_rate = vec(mean(success, dims = 1)),
+     success_rate_per_function = success[:, end],
+     distance_to_minimizer = vec(mean(dist, dims = 1)),
+     runtime = time() - t0)
+end
+```
+
+We define a time-to-success benchmarking framework. For each (optimizer, function, trial),
+we run the optimizer once with a large iteration budget and wrap the objective function to
+detect the first evaluation that achieves the success criterion. The wall-clock time at
+that moment is recorded as the "time to success". From these times we build a CDF:
+for a given wall-time budget T, what fraction of (function, trial) pairs were solved?
+```julia
+function make_success_tracker(f_raw, f_opt, Δf)
+    t0 = Ref(time())
+    time_to_success = Ref(Inf)
+    function tracked_f(u)
+        val = f_raw(u)
+        if val < Δf + f_opt && time_to_success[] == Inf
+            time_to_success[] = time() - t0[]
+        end
+        return val
+    end
+    return tracked_f, t0, time_to_success
+end
+
+function solve_problem_timed(optimizer::BenchmarkSetup, tracked_f, D::Int, run_length::Int;
+    u0 = pinit(D))
+    method = optimizer.method
+    optf = OptimizationFunction((u, _) -> tracked_f(u), AutoForwardDiff())
+    if optimizer.isboxed
+        prob = OptimizationProblem(optf, u0, lb = fill(-5.5, D), ub = fill(5.5, D))
+    else
+        prob = OptimizationProblem(optf, u0)
+    end
+    solve(prob, method; maxiters = run_length)
+end
+
+function solve_problem_timed(m::Chain, tracked_f, D::Int, run_length::Int)
+    rl1 = round(Int, m.p * run_length)
+    rl2 = run_length - rl1
+    sol = solve_problem_timed(m.first, tracked_f, D, rl1)
+    solve_problem_timed(m.second, tracked_f, D, rl2; u0 = sol.u)
+end
+
+function benchmark_time_to_success(
+    optimizer::Union{Chain, BenchmarkSetup}, f::BBOBFunction;
+    Ntrials::Int = 20, dimension::Int = 3, Δf::Real = 1e-6, max_run_length::Int = 100_000
+)
+    times = Float64[]
+    for i in 1:Ntrials
+        tracked_f, t0_ref, tts_ref = make_success_tracker(f.f, f.f_opt, Δf)
+        try
+            t0_ref[] = time()
+            sol = solve_problem_timed(optimizer, tracked_f, dimension, max_run_length)
+            push!(times, tts_ref[])
+        catch err
+            push!(times, Inf)
+            @warn(string(optimizer, " failed: ", err))
+        end
+    end
+    return times
+end
+
+benchmark_time_to_success(optimizer, f; kwargs...) =
+    benchmark_time_to_success(BenchmarkSetup(optimizer), f; kwargs...)
+
+function benchmark_time_to_success(
+    optimizer::Union{Chain, BenchmarkSetup}, funcs::Vector{BBOBFunction};
+    Ntrials::Int = 20, dimension::Int = 3, Δf::Real = 1e-6, max_run_length::Int = 100_000
+)
+    all_times = Float64[]
+    for f in funcs
+        append!(all_times, benchmark_time_to_success(
+            optimizer, f; Ntrials, dimension, Δf, max_run_length))
+    end
+    return all_times
+end
+
+benchmark_time_to_success(optimizer, funcs::Vector{BBOBFunction}; kwargs...) =
+    benchmark_time_to_success(BenchmarkSetup(optimizer), funcs; kwargs...)
+
+function pso_time_to_success(opt, funcs::Vector{BBOBFunction};
+    Ntrials::Int = 40, Δf::Real = 1e-6, max_evals::Int = 100_000)
+    all_times = Float64[]
+    for f in funcs
+        for _ in 1:Ntrials
+            tracked_f, t0_ref, tts_ref = make_success_tracker(f.f, f.f_opt, Δf)
+            try
+                loss = OptimizationFunction((u, _) -> Float32(tracked_f(Float64.(u))))
+                prob = OptimizationProblem{false}(loss, BBOB_X0; lb = BBOB_LB, ub = BBOB_UB)
+                np = opt isa HybridPSO ? opt.pso.num_particles : opt.num_particles
+                iters = max(1, max_evals ÷ np)
+                t0_ref[] = time()
+                if opt isa HybridPSO
+                    solve(prob, opt; maxiters = iters, local_maxiters = 10)
+                else
+                    solve(prob, opt; maxiters = iters)
+                end
+                push!(all_times, tts_ref[])
+            catch err
+                push!(all_times, Inf)
+                @warn("PSO TTS failed: $err")
+            end
+        end
+    end
+    return all_times
+end
+
+function success_rate_cdf(all_times::Vector{Float64}, time_thresholds::AbstractVector{Float64})
+    N = length(all_times)
+    return [count(x -> x <= t, all_times) / N for t in time_thresholds]
+end
+```
+```julia
+chain = (t; isboxed = false) -> Chain(
+    BenchmarkSetup(t, isboxed = isboxed),
+    BenchmarkSetup(NelderMead(), isboxed = false),
+    0.9
+)
+
+test_functions = BBOB.list_functions()
+dimension = 3
+run_length = round.(Int, 10 .^ LinRange(1, 5, 30))
+num_particles = 1024
+
+# Top CPU baselines from the main benchmark page
+setup = Dict(
+    "NelderMead"                    => NelderMead(),
+    "NLopt.GN_CRS2_LM()"           => chain(NLopt.GN_CRS2_LM(), isboxed = true),
+    "BBO_adaptive_de_rand_1_bin"    => chain(BBO_adaptive_de_rand_1_bin(), isboxed = true),
+    "BBO_adaptive_de_rand_1_bin_radiuslimited" => chain(
+        BBO_adaptive_de_rand_1_bin_radiuslimited(), isboxed = true),
+    "BBO_de_rand_2_bin"             => chain(BBO_de_rand_2_bin(), isboxed = true),
+    "ScipyDifferentialEvolution"    => chain(ScipyDifferentialEvolution(), isboxed = true),
+)
+
+# PSO variants — kernel-based, need SVector/Float32 path
+kernel_setup = Dict(
+    # CPU
+    "SerialPSO (CPU)"                => SerialPSO(num_particles),
+    "ParallelPSOKernel (sync, CPU)"  => ParallelPSOKernel(num_particles;
+                                            backend = CPU(), global_update = true),
+    "ParallelPSOKernel (async, CPU)" => ParallelPSOKernel(num_particles;
+                                            backend = CPU(), global_update = false),
+    "ParallelSyncPSOKernel (CPU)"    => ParallelSyncPSOKernel(num_particles;
+                                            backend = CPU()),
+    "HybridPSO-LBFGS (CPU)"         => HybridPSO(; backend = CPU()),
+    # GPU
+    "ParallelPSOKernel (sync, GPU)"  => ParallelPSOKernel(num_particles;
+                                            backend = CUDABackend(), global_update = true),
+    "ParallelPSOKernel (async, GPU)" => ParallelPSOKernel(num_particles;
+                                            backend = CUDABackend(), global_update = false),
+    "ParallelSyncPSOKernel (GPU)"    => ParallelSyncPSOKernel(num_particles;
+                                            backend = CUDABackend()),
+    "HybridPSO-LBFGS (GPU)"         => HybridPSO(; backend = CUDABackend()),
+)
+
+@memoize run_bench(algo) = BBOB.benchmark(
+    setup[algo], test_functions, run_length, Ntrials = 40, dimension = dimension)
+@memoize run_tts(algo) = benchmark_time_to_success(
+    setup[algo], test_functions, Ntrials = 40, dimension = dimension)
+@memoize run_kernel(algo) = pso_benchmark(
+    test_functions, run_length, kernel_setup[algo]; Ntrials = 40, dimension = dimension)
+@memoize run_kernel_tts(algo) = pso_time_to_success(
+    kernel_setup[algo], test_functions; Ntrials = 40)
+```
+
+## Test one optimizer
+```julia
+@time b = pso_benchmark(
+    test_functions[1:3], 100:500:5_000,
+    ParallelPSOKernel(num_particles; backend = CUDABackend()); Ntrials = 5)
+```
+
+## Test one test function (Rastrigin)
+```julia
+Δf = 1e-6
+f = test_functions[3]
+opt_single = ParallelPSOKernel(num_particles; backend = CUDABackend())
+sols = [pso_solve(f, 5_000 * num_particles, opt_single) for _ in 1:5]
+@info [sol.objective < Δf + f.f_opt for sol in sols]
+```
+
+## Test all (iterations)
+```julia
+results = Array{BBOB.BenchmarkResults}(undef, length(setup))
+Threads.@threads for (i, algo) in collect(enumerate(keys(setup)))
+    results[i] = run_bench(algo)
+end
+
+kernel_results = Dict{String, Any}()
+for algo in keys(kernel_setup)
+    kernel_results[algo] = run_kernel(algo)
+end
+```
+
+## Success Rate vs. Iterations
+```julia
+labels = collect(keys(setup))
+klabels = collect(keys(kernel_setup))
+all_labels = vcat(labels, klabels)
+
+idx = sortperm([b.success_rate[end] for b in results], rev = true)
+kidx = sortperm([kernel_results[k].success_rate[end] for k in klabels], rev = true)
+
+@info "CPU baselines:"
+for i in idx; @info labels[i] sr=results[i].success_rate[end]; end
+@info "PSO variants:"
+for i in kidx; @info klabels[i] sr=kernel_results[klabels[i]].success_rate[end]; end
+```
+
+## Test all (wall-clock time to success)
+
+For the time-based benchmark, each optimizer is run once with a large iteration budget
+per (function, trial) pair. The objective function is wrapped to detect the first
+evaluation that achieves the success criterion and record the wall-clock time.
+```julia
+tts_results = Dict{String, Vector{Float64}}()
+
+for algo in keys(setup)
+    tts_results[algo] = run_tts(algo)
+end
+for algo in keys(kernel_setup)
+    tts_results[algo] = run_kernel_tts(algo)
+end
+```
+
+## Success Rate vs. Wall-Clock Time
+```julia
+all_finite = filter(isfinite, vcat(values(tts_results)...))
+t_lo = minimum(all_finite) / 2
+t_hi = maximum(all_finite) * 2
+time_thresholds = 10 .^ range(log10(t_lo), log10(t_hi), length = 50)
+
+cdfs = Dict(algo => success_rate_cdf(tts_results[algo], time_thresholds)
+            for algo in keys(tts_results))
+idx = sortperm([cdfs[l][end] for l in all_labels], rev = true)
+
+@info "Time-to-success CDF (budget=$(round(t_hi, digits=3))s):"
+for i in idx
+    @info all_labels[i] sr=round(cdfs[all_labels[i]][end], digits=4)
+end
+```
+
+## Success Rate per Function
+```julia
+spf = hcat(
+    reduce(hcat, b.success_rate_per_function for b in results),
+    reduce(hcat, kernel_results[k].success_rate_per_function for k in klabels),
+)
+@info "Per-function success rates:" all_labels spf
+```
+
+## Distance to Minimizer
+```julia
+all_dist = vcat(
+    [(rl = r.run_length, d = r.distance_to_minimizer) for r in results],
+    [(rl = kernel_results[k].run_length, d = kernel_results[k].distance_to_minimizer) for k in klabels],
+)
+idx = sortperm([r.d[end] for r in all_dist])
+@info "Distance to minimizer:"
+for i in idx; @info all_labels[i] d=all_dist[i].d[end]; end
+```
+
+## Relative Runtime
+```julia
+runtimes = vcat(
+    getfield.(results, :runtime),
+    [kernel_results[k].runtime for k in klabels],
+)
+ref = findfirst("NelderMead" .== all_labels)
+runtimes = runtimes ./ runtimes[ref]
+@info "Runtime relative to NelderMead:"
+for (l, r) in zip(all_labels, runtimes); @info l rt=r; end
+```
