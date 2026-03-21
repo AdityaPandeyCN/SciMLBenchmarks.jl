@@ -1,0 +1,234 @@
+---
+title: GPU Particle Swarm Global Optimizer Benchmarks
+author: 
+---
+
+In this benchmark we compare the PSO variants in
+[ParallelParticleSwarms.jl](https://github.com/SciML/ParallelParticleSwarms.jl)
+on standard test problems from the
+[ICLR 2024 workshop paper](https://openreview.net/pdf?id=nD10o1ge97),
+using the [Optimization.jl](https://github.com/SciML/Optimization.jl) interface.
+This tests both iterations and wall-clock time vs accuracy across CPU and GPU
+backends. GPU-PSO evaluates `num_particles` objective functions simultaneously
+in a single kernel launch, so wall-clock time is the key metric.
+
+## Setup
+```julia
+using ParallelParticleSwarms, Optimization, Statistics
+using KernelAbstractions: CPU
+using StaticArrays, LinearAlgebra
+using CUDA
+
+const PSOKernel = ParallelParticleSwarms.ParallelPSOKernel
+const SyncPSOKernel = ParallelParticleSwarms.ParallelSyncPSOKernel
+const SerPSO = ParallelParticleSwarms.SerialPSO
+const PSOArray = ParallelParticleSwarms.ParallelPSOArray
+const HPso = ParallelParticleSwarms.HybridPSO
+
+@info "CUDA" functional=CUDA.functional() gpu=CUDA.name(CUDA.device())
+```
+
+The Rosenbrock function is the standard benchmark from the paper (Section 3.1,
+Appendix A.2.1). The modified Rosenbrock adds `sin` terms to create a non-convex
+landscape with multiple local minima (Section 3.3).
+```julia
+function rosenbrock(x, p)
+    res = zero(eltype(x))
+    for i in 1:(length(x) - 1)
+        res += p[2] * (x[i + 1] - x[i]^2)^2 + (p[1] - x[i])^2
+    end
+    res
+end
+
+function rosenbrock_mod(x, p)
+    res = zero(eltype(x))
+    for i in 1:(length(x) - 1)
+        res += p[2] * sin(p[3] * x[i]) * (x[i + 1] - x[i]^2)^2 + (p[1] - x[i])^2
+    end
+    res
+end
+```
+```julia
+function run_benchmark(name, f, x0, p, lb, ub, opt; maxiters = 500, Ntrials = 40)
+    ad = opt isa HPso ? AutoForwardDiff() : Optimization.SciMLBase.NoAD()
+    optf = OptimizationFunction{false}(f, ad)
+    prob = OptimizationProblem{false}(optf, x0, p; lb = lb, ub = ub)
+    if opt isa HPso
+        solve(prob, opt; maxiters = 10, local_maxiters = 30)
+    else
+        solve(prob, opt; maxiters = 10)
+    end
+    losses = Float64[]
+    times = Float64[]
+    for _ in 1:Ntrials
+        t = @elapsed begin
+            sol = opt isa HPso ?
+                solve(prob, opt; maxiters = maxiters, local_maxiters = 30) :
+                solve(prob, opt; maxiters = maxiters)
+        end
+        push!(losses, Float64(sol.objective))
+        push!(times, t)
+    end
+    (name = name,
+     med_loss = median(losses), min_loss = minimum(losses),
+     med_time = median(times), min_time = minimum(times))
+end
+```
+```julia
+N10 = 10
+x0_10 = SVector{N10}(ntuple(_ -> 5.0f0, Val(N10)))
+p_10 = SVector{2}(Float32[1.0, 100.0])
+lb_10 = SVector{N10}(ntuple(_ -> -1.0f0, Val(N10)))
+ub_10 = SVector{N10}(ntuple(_ -> 10.0f0, Val(N10)))
+p_mod = SVector{3}(Float32[1.0, 100.0, 1.5])
+
+Ntrials = 40
+num_particles = 5000
+
+setup = Dict(
+    "SerialPSO (CPU)"        => SerPSO(num_particles),
+    "PSOKernel sync (CPU)"   => PSOKernel(num_particles; backend = CPU(), global_update = true),
+    "SyncPSOKernel (CPU)"    => SyncPSOKernel(num_particles; backend = CPU()),
+    "HybridPSO-LBFGS (CPU)"  => HPso(pso = PSOKernel(num_particles; backend = CPU()); backend = CPU()),
+    "PSOKernel sync (GPU)"   => PSOKernel(num_particles; backend = CUDABackend(), global_update = true),
+    "PSOKernel async (GPU)"  => PSOKernel(num_particles; backend = CUDABackend(), global_update = false),
+    "SyncPSOKernel (GPU)"    => SyncPSOKernel(num_particles; backend = CUDABackend()),
+    "HybridPSO-LBFGS (GPU)"  => HPso(pso = PSOKernel(num_particles; backend = CUDABackend()); backend = CUDABackend()),
+)
+```
+
+## Test one optimizer
+```julia
+@time b = run_benchmark("PSOKernel sync (GPU)", rosenbrock, x0_10, p_10, lb_10, ub_10,
+    PSOKernel(num_particles; backend = CUDABackend(), global_update = true);
+    maxiters = 500, Ntrials = 10)
+@info b.name loss=b.med_loss time=b.med_time
+```
+
+## Test one test function (Rosenbrock 10D)
+```julia
+opt_single = PSOKernel(num_particles; backend = CUDABackend(), global_update = true)
+optf = OptimizationFunction{false}(rosenbrock)
+prob = OptimizationProblem{false}(optf, x0_10, p_10; lb = lb_10, ub = ub_10)
+sols = [solve(prob, opt_single; maxiters = 500) for _ in 1:10]
+@info [round(Float64(sol.objective), sigdigits = 4) for sol in sols]
+```
+
+## Test all (10D Rosenbrock)
+```julia
+results = Dict{String, Any}()
+
+for (name, opt) in setup
+    try
+        results[name] = run_benchmark(name, rosenbrock, x0_10, p_10, lb_10, ub_10, opt;
+            maxiters = 500, Ntrials = Ntrials)
+    catch e
+        @warn "$name FAILED" exception=e
+    end
+end
+```
+
+## Loss vs. Optimizer (10D Rosenbrock)
+```julia
+labels = collect(keys(results))
+idx = sortperm([results[l].med_loss for l in labels])
+
+for i in idx
+    r = results[labels[i]]
+    @info labels[i] med_loss=round(r.med_loss, sigdigits=4) min_loss=round(r.min_loss, sigdigits=4)
+end
+```
+
+## Test all (wall-clock time)
+```julia
+labels = collect(keys(results))
+idx = sortperm([results[l].med_time for l in labels])
+
+for i in idx
+    r = results[labels[i]]
+    @info labels[i] med_time=round(r.med_time, sigdigits=4)
+end
+```
+
+## Wall-Clock Speedup (CPU vs GPU)
+```julia
+cpu_times = Dict{String, Float64}()
+gpu_times = Dict{String, Float64}()
+
+for (name, r) in results
+    base = replace(name, r" \(CPU\)$" => "", r" \(GPU\)$" => "")
+    if contains(name, "CPU")
+        cpu_times[base] = r.med_time
+    elseif contains(name, "GPU")
+        gpu_times[base] = r.med_time
+    end
+end
+
+for (base, gt) in sort(collect(gpu_times))
+    if haskey(cpu_times, base)
+        speedup = round(cpu_times[base] / gt, digits = 1)
+        @info base cpu=round(cpu_times[base], sigdigits=3) gpu=round(gt, sigdigits=3) speedup="$(speedup)x"
+    end
+end
+```
+
+## Test all (10D Modified Rosenbrock)
+```julia
+results_mod = Dict{String, Any}()
+
+for (name, opt) in setup
+    try
+        results_mod[name] = run_benchmark(name, rosenbrock_mod, x0_10, p_mod, lb_10, ub_10, opt;
+            maxiters = 500, Ntrials = Ntrials)
+    catch e
+        @warn "$name FAILED" exception=e
+    end
+end
+```
+
+## Loss vs. Optimizer (10D Modified Rosenbrock)
+```julia
+labels_mod = collect(keys(results_mod))
+idx = sortperm([results_mod[l].med_loss for l in labels_mod])
+
+for i in idx
+    r = results_mod[labels_mod[i]]
+    @info labels_mod[i] med_loss=round(r.med_loss, sigdigits=4) min_loss=round(r.min_loss, sigdigits=4)
+end
+```
+
+## GPU Particle Count Scaling
+```julia
+particle_counts = [100, 500, 1000, 5000, 10000, 50000]
+
+for np in particle_counts
+    try
+        local opt = PSOKernel(np; backend = CUDABackend(), global_update = true)
+        local optf = OptimizationFunction{false}(rosenbrock)
+        local prob = OptimizationProblem{false}(optf, x0_10, p_10; lb = lb_10, ub = ub_10)
+        solve(prob, opt; maxiters = 10)
+        local times = Float64[]
+        local losses = Float64[]
+        for _ in 1:Ntrials
+            t = @elapsed sol = solve(prob, opt; maxiters = 500)
+            push!(times, t)
+            push!(losses, Float64(sol.objective))
+        end
+        @info "n=$np" med_loss=round(median(losses), sigdigits=4) med_time=round(median(times), sigdigits=4)
+    catch e
+        @warn "n=$np FAILED" exception=e
+    end
+end
+```
+
+## Relative Runtime
+```julia
+labels = collect(keys(results))
+ref_name = "SerialPSO (CPU)"
+ref_time = results[ref_name].med_time
+
+for l in sort(labels, by = l -> results[l].med_time)
+    rt = round(results[l].med_time / ref_time, digits = 2)
+    @info l relative_runtime="$(rt)x"
+end
+```
