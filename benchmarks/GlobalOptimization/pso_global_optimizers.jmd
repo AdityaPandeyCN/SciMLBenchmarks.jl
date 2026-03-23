@@ -126,8 +126,23 @@ end
 PSO benchmark harness: same output shape as `BBOB.BenchmarkResults` so both
 can go on the same plots. Also stores per-trial `@elapsed` times and hits
 for the wall-clock CDF.
+
+HybridPSO returns `sol.u` as a `view` into a `CuArray`, so we must
+collect results to CPU before computing metrics.
 ```julia
 const Δf_pso = 1f-6
+
+## GPU-safe helpers: collect sol.u / sol.objective to CPU
+function _sol_u_cpu(sol, ::Val{N}) where N
+    u = try Array(sol.u) catch; sol.u end
+    u = u isa AbstractArray && ndims(u) == 0 ? u[] : u
+    u isa SVector ? u : SVector{N}(collect(u))
+end
+
+function _sol_obj_cpu(sol)
+    o = try Array(sol.objective) catch; sol.objective end
+    o isa Number ? Float64(o) : Float64(o[])
+end
 
 function pso_solve(opt, func::GPUBBOBFunction{F,N,M}, lb, ub, maxiters) where {F,N,M}
     _f = func.f; _xo = func.x_opt; _fo = func.f_opt; _Q = func.Q; _R = func.R
@@ -144,10 +159,12 @@ function pso_solve(opt, func::GPUBBOBFunction{F,N,M}, lb, ub, maxiters) where {F
         solve(prob, opt; maxiters = maxiters)
     end
 end
+
 function pso_benchmark(opt, suite, run_length;
         Ntrials = 40, lb = nothing, ub = nothing)
     Nf = length(suite)
     Nr = length(run_length)
+    N  = length(lb)
     success = zeros(Float64, Nf, Nr)
     dist    = zeros(Float64, Nf, Nr)
     raw_times = zeros(Float64, Nf, Nr, Ntrials)
@@ -162,11 +179,12 @@ function pso_benchmark(opt, suite, run_length;
                 t = @elapsed sol = try pso_solve(opt, func, lb, ub, rl) catch; nothing end
                 raw_times[fi, ri, ti] = t
                 if sol !== nothing
-                    fval = Float64(sol.objective)
+                    u_cpu = _sol_u_cpu(sol, Val(N))
+                    fval  = _sol_obj_cpu(sol)
                     ok = abs(fval - Float64(func.f_opt)) < Δf_pso
                     raw_hits[fi, ri, ti] = ok
                     hits += ok ? 1 : 0
-                    dsum += norm(Float64.(sol.u) .- Float64.(func.x_opt))
+                    dsum += norm(Float64.(u_cpu) .- Float64.(func.x_opt))
                 end
             end
             success[fi, ri] = hits / Ntrials
@@ -284,18 +302,24 @@ sols = [pso_solve(opt_single, f, lb_pso, ub_pso, 500) for _ in 1:10]
 pso_results = Dict{String, Any}()
 for algo in pso_labels
     @info "Running $algo ..."
-    pso_results[algo] = run_pso_bench(algo)
-    @info "  done" success=round(pso_results[algo].success_rate[end], digits = 3)
+    try
+        pso_results[algo] = run_pso_bench(algo)
+        @info "  done" success=round(pso_results[algo].success_rate[end], digits = 3)
+    catch err
+        @warn "$algo failed, skipping" exception=(err, catch_backtrace())
+    end
 end
+
+available_pso = [l for l in pso_labels if haskey(pso_results, l)]
+@info "Completed" n=length(available_pso) labels=available_pso
 ```
 
 ## Success Rate vs. Iterations
 ```julia
-## Print results
-all_sr_end = [pso_results[l].success_rate[end] for l in pso_labels]
+all_sr_end = [pso_results[l].success_rate[end] for l in available_pso]
 idx = sortperm(all_sr_end, rev = true)
 for i in idx
-    @info pso_labels[i] success_rate=round(all_sr_end[i], digits = 4)
+    @info available_pso[i] success_rate=round(all_sr_end[i], digits = 4)
 end
 ```
 
@@ -308,7 +332,7 @@ tts_results = Dict{String, Vector{Float64}}()
 #     tts_results[algo] = run_cpu_tts(algo)
 # end
 
-for algo in pso_labels
+for algo in available_pso
     tts_results[algo] = extract_tts(pso_results[algo])
 end
 ```
@@ -321,10 +345,10 @@ if !isempty(all_finite)
     t_hi = maximum(all_finite) * 2
     time_thresholds = 10 .^ range(log10(t_lo), log10(t_hi), length = 50)
 
-    cdfs = Dict(algo => success_rate_cdf(tts_results[algo], time_thresholds) for algo in pso_labels)
-    idx = sortperm([cdfs[l][end] for l in pso_labels], rev = true)
+    cdfs = Dict(algo => success_rate_cdf(tts_results[algo], time_thresholds) for algo in available_pso)
+    idx = sortperm([cdfs[l][end] for l in available_pso], rev = true)
     for i in idx
-        @info pso_labels[i] wall_clock_success=round(cdfs[pso_labels[i]][end], digits = 4)
+        @info available_pso[i] wall_clock_success=round(cdfs[available_pso[i]][end], digits = 4)
     end
 else
     @warn "No successful solves — cannot build CDF"
@@ -333,30 +357,36 @@ end
 
 ## Success Rate per Function Heatmap
 ```julia
-pso_srpf = reduce(hcat, pso_results[l].success_rate_per_function for l in pso_labels)
+if !isempty(available_pso)
+    pso_srpf = reduce(hcat, pso_results[l].success_rate_per_function for l in available_pso)
 
-for (i, l) in enumerate(pso_labels)
-    @info l per_func_success=round.(pso_srpf[:, i], digits = 2)
+    for (i, l) in enumerate(available_pso)
+        @info l per_func_success=round.(pso_srpf[:, i], digits = 2)
+    end
 end
 ```
 
 ## Distance to Minimizer vs. Iterations
 ```julia
-all_dtm_end = [pso_results[l].distance_to_minimizer[end] for l in pso_labels]
-idx = sortperm(all_dtm_end, rev = false)
-for i in idx
-    @info pso_labels[i] dist_to_min=round(all_dtm_end[i], digits = 4)
+if !isempty(available_pso)
+    all_dtm_end = [pso_results[l].distance_to_minimizer[end] for l in available_pso]
+    idx = sortperm(all_dtm_end, rev = false)
+    for i in idx
+        @info available_pso[i] dist_to_min=round(all_dtm_end[i], digits = 4)
+    end
 end
 ```
 
 ## Relative Runtime
 ```julia
-all_runtimes = [pso_results[l].runtime for l in pso_labels]
-ref_rt = minimum(all_runtimes)
-all_runtimes_rel = all_runtimes ./ ref_rt
+if !isempty(available_pso)
+    all_runtimes = [pso_results[l].runtime for l in available_pso]
+    ref_rt = minimum(all_runtimes)
+    all_runtimes_rel = all_runtimes ./ ref_rt
 
-idx = sortperm(all_runtimes_rel)
-for i in idx
-    @info pso_labels[i] relative_runtime="$(round(all_runtimes_rel[i], digits = 2))x"
+    idx = sortperm(all_runtimes_rel)
+    for i in idx
+        @info available_pso[i] relative_runtime="$(round(all_runtimes_rel[i], digits = 2))x"
+    end
 end
 ```

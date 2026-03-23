@@ -94,13 +94,16 @@ end
 ## F5: Linear Slope
 function bbob_linear_slope(x::SVector{N, T}, x_opt, f_opt, Q, R) where {N, T}
     s = SVector{N, T}(ntuple(i -> sign(x_opt[i]) * T(10)^(T(i - 1) / T(N - 1)), Val(N)))
-    z = ifelse.(x_opt .* x .< T(25), x, x_opt)
+    mask = T.(x_opt .* x .< T(25))
+    z = mask .* x .+ (one(T) .- mask) .* x_opt
     sum(T(5) .* abs.(s) .- s .* z) + f_opt
 end
+
 ## F6: Attractive Sector
 function bbob_attractive_sector(x::SVector{N, T}, x_opt, f_opt, Q, R) where {N, T}
     z = Q * lambda_mul(Val(N), T(10), R * (x .- x_opt))
-    z = ifelse.(x_opt .* z .> zero(T), T(100) .* z, z)
+    mask = T.(x_opt .* z .> zero(T))
+    z = (one(T) .- mask) .* z .+ mask .* (T(100) .* z)
     t_osz(sum(z .^ 2))^T(0.9) + f_opt
 end
 
@@ -108,9 +111,9 @@ end
 function bbob_step_ellipsoidal(x::SVector{N, T}, x_opt, f_opt, Q, R) where {N, T}
     z = lambda_mul(Val(N), T(10), R * (x .- x_opt))
     zhat_1 = z[1]
-    z = ifelse.(z .> T(0.5),
-        floor.(T(0.5) .+ z),
-        floor.(T(0.5) .+ T(10) .* z) ./ T(10))
+    mask = T.(z .> T(0.5))
+    z = mask .* floor.(T(0.5) .+ z) .+
+        (one(T) .- mask) .* (floor.(T(0.5) .+ T(10) .* z) ./ T(10))
     z = Q * z
     w = ellip_weights(Val(N), T, T(2))
     T(0.1) * max(abs(zhat_1) / T(1e4), sum(w .* z .^ 2)) + f_pen(x) + f_opt
