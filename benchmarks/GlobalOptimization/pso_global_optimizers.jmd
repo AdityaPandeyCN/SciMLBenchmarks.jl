@@ -1,6 +1,6 @@
 ---
 title: GPU Particle Swarm Global Optimizer Benchmarks
-author: Utkarsh R, Aditya Pandey, Chris Rackauckas
+author: 
 ---
 
 In this benchmark we compare GPU-accelerated PSO variants from
@@ -127,10 +127,22 @@ PSO benchmark harness: same output shape as `BBOB.BenchmarkResults` so both
 can go on the same plots. Also stores per-trial `@elapsed` times and hits
 for the wall-clock CDF.
 
-Note: HybridPSO returns `sol.u` as a 0-d `CuArray` (a view into GPU memory),
-so we use `CUDA.@allowscalar` when reading back metrics.
+HybridPSO returns `sol.u` as a `view` into a `CuArray`, so we must
+collect results to CPU before computing metrics.
 ```julia
 const Δf_pso = 1f-6
+
+## GPU-safe helpers: collect sol.u / sol.objective to CPU
+function _sol_u_cpu(sol, ::Val{N}) where N
+    u = try Array(sol.u) catch; sol.u end
+    u = u isa AbstractArray && ndims(u) == 0 ? u[] : u
+    u isa SVector ? u : SVector{N}(collect(u))
+end
+
+function _sol_obj_cpu(sol)
+    o = try Array(sol.objective) catch; sol.objective end
+    o isa Number ? Float64(o) : Float64(o[])
+end
 
 function pso_solve(opt, func::GPUBBOBFunction{F,N,M}, lb, ub, maxiters) where {F,N,M}
     _f = func.f; _xo = func.x_opt; _fo = func.f_opt; _Q = func.Q; _R = func.R
@@ -167,10 +179,8 @@ function pso_benchmark(opt, suite, run_length;
                 t = @elapsed sol = try pso_solve(opt, func, lb, ub, rl) catch; nothing end
                 raw_times[fi, ri, ti] = t
                 if sol !== nothing
-                    CUDA.@allowscalar begin
-                        u_cpu = sol.u isa SVector ? sol.u : SVector{N, Float32}(sol.u[])
-                        fval  = Float64(sol.objective isa Real ? sol.objective : sol.objective[])
-                    end
+                    u_cpu = _sol_u_cpu(sol, Val(N))
+                    fval  = _sol_obj_cpu(sol)
                     ok = abs(fval - Float64(func.f_opt)) < Δf_pso
                     raw_hits[fi, ri, ti] = ok
                     hits += ok ? 1 : 0
