@@ -1,6 +1,6 @@
 ---
 title: GPU Particle Swarm Global Optimizer Benchmarks
-author: 
+author: Utkarsh R, Aditya Pandey, Chris Rackauckas
 ---
 
 In this benchmark we compare GPU-accelerated PSO variants from
@@ -39,7 +39,7 @@ const SerPSO = ParallelParticleSwarms.SerialPSO
 const PSOArray = ParallelParticleSwarms.ParallelPSOArray
 const HPso = ParallelParticleSwarms.HybridPSO
 
-include("bbo_gpu.jl")
+include("bbob.jl")
 
 @info "CUDA" functional=CUDA.functional() gpu=CUDA.name(CUDA.device())
 ```
@@ -129,11 +129,13 @@ for the wall-clock CDF.
 ```julia
 const Δf_pso = 1f-6
 
-function pso_solve(opt, func, lb, ub, maxiters)
-    obj = (x, p) -> func(x)
+function pso_solve(opt, func::GPUBBOBFunction{F,N,M}, lb, ub, maxiters) where {F,N,M}
+    _f = func.f; _xo = func.x_opt; _fo = func.f_opt; _Q = func.Q; _R = func.R
+    obj = let f=_f, xo=_xo, fo=_fo, Q=_Q, R=_R
+        (x, p) -> f(x, xo, fo, Q, R)
+    end
     ad = opt isa HPso ? AutoForwardDiff() : Optimization.SciMLBase.NoAD()
     optf = OptimizationFunction{false}(obj, ad)
-    N = length(lb)
     x0 = SVector{N}(ntuple(i -> lb[i] + rand(Float32) * (ub[i] - lb[i]), Val(N)))
     prob = OptimizationProblem{false}(optf, x0, nothing; lb = lb, ub = ub)
     if opt isa HPso
@@ -142,7 +144,6 @@ function pso_solve(opt, func, lb, ub, maxiters)
         solve(prob, opt; maxiters = maxiters)
     end
 end
-
 function pso_benchmark(opt, suite, run_length;
         Ntrials = 40, lb = nothing, ub = nothing)
     Nf = length(suite)
@@ -206,7 +207,7 @@ chain = (t; isboxed = false) -> Chain(
 
 test_functions = BBOB.list_functions()
 dimension = 3
-run_length = round.(Int, 10 .^ LinRange(1, 5, 30))
+run_length = round.(Int, 10 .^ LinRange(1, 4, 15))
 
 const DIM_PSO = 3
 suite, fnames = gpu_bbob_suite(Val(DIM_PSO))
@@ -215,25 +216,25 @@ ub_pso = SVector{DIM_PSO}(ntuple(_ ->  5f0, Val(DIM_PSO)))
 num_particles = 5000
 
 cpu_setup = Dict(
-    "NelderMead" => NelderMead(),
-    "NLopt CRS2" => chain(NLopt.GN_CRS2_LM(), isboxed = true),
-    "NLopt DIRECT" => chain(NLopt.GN_DIRECT(), isboxed = true),
-    "NLopt ESCH" => chain(NLopt.GN_ESCH(), isboxed = true),
-    "BBO adaptive DE" => chain(BBO_adaptive_de_rand_1_bin(), isboxed = true),
-    "BBO DE rand2" => chain(BBO_de_rand_2_bin(), isboxed = true),
-    "BBO separable NES" => chain(BBO_separable_nes(), isboxed = true),
-    "Metaheuristics DE" => chain(OptimizationMetaheuristics.DE(), isboxed = true),
-    "Metaheuristics ECA" => chain(OptimizationMetaheuristics.ECA(), isboxed = true),
-    "SciPy DE" => chain(ScipyDifferentialEvolution(), isboxed = true),
-    "SciPy SHGO" => chain(ScipyShgo(), isboxed = true),
-    "SciPy DIRECT" => chain(ScipyDirect(), isboxed = true),
+    # "NelderMead" => NelderMead(),
+    # "NLopt CRS2" => chain(NLopt.GN_CRS2_LM(), isboxed = true),
+    # "NLopt DIRECT" => chain(NLopt.GN_DIRECT(), isboxed = true),
+    # "NLopt ESCH" => chain(NLopt.GN_ESCH(), isboxed = true),
+    # "BBO adaptive DE" => chain(BBO_adaptive_de_rand_1_bin(), isboxed = true),
+    # "BBO DE rand2" => chain(BBO_de_rand_2_bin(), isboxed = true),
+    # "BBO separable NES" => chain(BBO_separable_nes(), isboxed = true),
+    # "Metaheuristics DE" => chain(OptimizationMetaheuristics.DE(), isboxed = true),
+    # "Metaheuristics ECA" => chain(OptimizationMetaheuristics.ECA(), isboxed = true),
+    # "SciPy DE" => chain(ScipyDifferentialEvolution(), isboxed = true),
+    # "SciPy SHGO" => chain(ScipyShgo(), isboxed = true),
+    # "SciPy DIRECT" => chain(ScipyDirect(), isboxed = true),
 )
 
 pso_setup = Dict(
-    "SerialPSO (CPU)"       => SerPSO(num_particles),
-    "PSOKernel sync (CPU)"  => PSOKernel(num_particles; backend = CPU(), global_update = true),
-    "SyncPSOKernel (CPU)"   => SyncPSOKernel(num_particles; backend = CPU()),
-    "HybridPSO-LBFGS (CPU)" => HPso(pso = PSOKernel(num_particles; backend = CPU()); backend = CPU()),
+    # "SerialPSO (CPU)"       => SerPSO(num_particles),
+    # "PSOKernel sync (CPU)"  => PSOKernel(num_particles; backend = CPU(), global_update = true),
+    # "SyncPSOKernel (CPU)"   => SyncPSOKernel(num_particles; backend = CPU()),
+    # "HybridPSO-LBFGS (CPU)" => HPso(pso = PSOKernel(num_particles; backend = CPU()); backend = CPU()),
     "PSOKernel sync (GPU)"  => PSOKernel(num_particles; backend = CUDABackend(), global_update = true),
     "PSOKernel async (GPU)" => PSOKernel(num_particles; backend = CUDABackend(), global_update = false),
     "SyncPSOKernel (GPU)"   => SyncPSOKernel(num_particles; backend = CUDABackend()),
@@ -244,47 +245,41 @@ cpu_labels = collect(keys(cpu_setup))
 pso_labels = collect(keys(pso_setup))
 all_labels = vcat(cpu_labels, pso_labels)
 
-@memoize run_cpu_bench(algo) = BBOB.benchmark(
-    cpu_setup[algo], test_functions, run_length, Ntrials = 40, dimension = dimension)
-@memoize run_cpu_tts(algo) = benchmark_time_to_success(
-    cpu_setup[algo], test_functions, Ntrials = 40, dimension = dimension)
+# @memoize run_cpu_bench(algo) = BBOB.benchmark(
+#     cpu_setup[algo], test_functions, run_length, Ntrials = 40, dimension = dimension)
+# @memoize run_cpu_tts(algo) = benchmark_time_to_success(
+#     cpu_setup[algo], test_functions, Ntrials = 40, dimension = dimension)
 @memoize run_pso_bench(algo) = pso_benchmark(
-    pso_setup[algo], suite, run_length; Ntrials = 40, lb = lb_pso, ub = ub_pso)
+    pso_setup[algo], suite, run_length; Ntrials = 10, lb = lb_pso, ub = ub_pso)
 ```
 
 ## Test one optimizer
 ```julia
-@time b = BBOB.benchmark(
-    chain(OptimizationMetaheuristics.ECA(), isboxed = true),
-    test_functions[1:5], 100:500:5_000, Ntrials = 10, dimension = 3)
+@time b = pso_benchmark(
+    PSOKernel(num_particles; backend = CUDABackend(), global_update = true),
+    suite[1:3], run_length[1:5]; Ntrials = 5, lb = lb_pso, ub = ub_pso)
 
-# plot(b)
+@info "quick test" success=round(b.success_rate[end], digits = 3) time=round(b.runtime, sigdigits = 3)
 ```
 
-## Test one test function (Rastrigin)
+## Test one test function (Rosenbrock)
 ```julia
-f = test_functions[3]
-single_setup = BenchmarkSetup(NLopt.GN_CRS2_LM(), isboxed = true)
+f = suite[8]
+opt_single = PSOKernel(num_particles; backend = CUDABackend(), global_update = true)
 
-sols = [BBOB.solve_problem(single_setup, f, 3, 5_000) for _ in 1:10]
-@info [sol.objective < 1e-6 + f.f_opt for sol in sols]
-
-# p = plot(f, size = (600, 600), zoom = 1.5)
-# for sol in sols
-#     scatter!(sol.u[1:1], sol.u[2:2], label = "", c = "blue",
-#         marker = :xcross, markersize = 5, markerstrokewidth = 0)
-# end
-# p
+sols = [pso_solve(opt_single, f, lb_pso, ub_pso, 500) for _ in 1:10]
+@info "losses" [round(Float64(sol.objective), sigdigits = 4) for sol in sols]
+@info "success" [abs(Float64(sol.objective) - Float64(f.f_opt)) < Δf_pso for sol in sols]
 ```
 
 ## Test all (iterations)
 ```julia
-cpu_results = Dict{String, Any}()
-for algo in cpu_labels
-    @info "Running $algo ..."
-    cpu_results[algo] = run_cpu_bench(algo)
-    @info "  done" success=round(cpu_results[algo].success_rate[end], digits = 3)
-end
+# cpu_results = Dict{String, Any}()
+# for algo in cpu_labels
+#     @info "Running $algo ..."
+#     cpu_results[algo] = run_cpu_bench(algo)
+#     @info "  done" success=round(cpu_results[algo].success_rate[end], digits = 3)
+# end
 
 pso_results = Dict{String, Any}()
 for algo in pso_labels
@@ -296,58 +291,22 @@ end
 
 ## Success Rate vs. Iterations
 ```julia
-# const MARKERS = [:circle, :diamond, :utriangle, :square, :star5, :dtriangle, :pentagon,
-#     :hexagon, :cross, :xcross, :rtriangle, :ltriangle, :star4, :star8, :heptagon, :octagon,
-#     :vline, :hline, :+, :x]
-# const LINESTYLES = [:solid, :dash, :dot, :dashdot, :dashdotdot]
-#
-# all_sr_end = vcat(
-#     [cpu_results[l].success_rate[end] for l in cpu_labels],
-#     [pso_results[l].success_rate[end] for l in pso_labels])
-# idx = sortperm(all_sr_end, rev = true)
-#
-# p = plot(xscale = :log10, legend = :outerright,
-#     size = (900, 400), margin = 10Plots.px, dpi = 200,
-#     xlabel = "Iterations", ylabel = "Success rate", ylim = (0, 1))
-# for (j, i) in enumerate(idx)
-#     l = all_labels[i]
-#     if l in cpu_labels
-#         plot!(cpu_results[l], label = l, showribbon = false,
-#             lw = 2.5, xlim = (1, 1e5), x = :run_length,
-#             markershape = MARKERS[mod1(j, length(MARKERS))],
-#             linestyle = LINESTYLES[mod1(j, length(LINESTYLES))],
-#             markersize = 4, markerstrokewidth = 0)
-#     else
-#         plot!(run_length, pso_results[l].success_rate, label = l,
-#             lw = 2.5, xlim = (1, 1e5),
-#             markershape = MARKERS[mod1(j, length(MARKERS))],
-#             linestyle = LINESTYLES[mod1(j, length(LINESTYLES))],
-#             markersize = 4, markerstrokewidth = 0)
-#     end
-# end
-# p
-
-## Print results instead
-all_sr_end = vcat(
-    [cpu_results[l].success_rate[end] for l in cpu_labels],
-    [pso_results[l].success_rate[end] for l in pso_labels])
+## Print results
+all_sr_end = [pso_results[l].success_rate[end] for l in pso_labels]
 idx = sortperm(all_sr_end, rev = true)
 for i in idx
-    @info all_labels[i] success_rate=round(all_sr_end[i], digits = 4)
+    @info pso_labels[i] success_rate=round(all_sr_end[i], digits = 4)
 end
 ```
 
 ## Test all (wall-clock time to success)
-
-CPU baselines use the wrapped-objective approach. PSO variants use external
-`@elapsed` timing since GPU kernels cannot call `time()` inside the objective.
 ```julia
 tts_results = Dict{String, Vector{Float64}}()
 
-for algo in cpu_labels
-    @info "TTS: $algo ..."
-    tts_results[algo] = run_cpu_tts(algo)
-end
+# for algo in cpu_labels
+#     @info "TTS: $algo ..."
+#     tts_results[algo] = run_cpu_tts(algo)
+# end
 
 for algo in pso_labels
     tts_results[algo] = extract_tts(pso_results[algo])
@@ -355,111 +314,49 @@ end
 ```
 
 ## Success Rate vs. Wall-Clock Time
-
-This is the key plot. The x-axis is a wall-clock time budget; for each budget T,
-the y-axis shows what fraction of (function, trial) pairs the optimizer solved
-within T seconds. GPU-PSO evaluates thousands of particles in parallel, so it
-should dominate on this metric even if it uses more total evaluations.
 ```julia
 all_finite = filter(isfinite, vcat(values(tts_results)...))
-t_lo = minimum(all_finite) / 2
-t_hi = maximum(all_finite) * 2
-time_thresholds = 10 .^ range(log10(t_lo), log10(t_hi), length = 50)
+if !isempty(all_finite)
+    t_lo = minimum(all_finite) / 2
+    t_hi = maximum(all_finite) * 2
+    time_thresholds = 10 .^ range(log10(t_lo), log10(t_hi), length = 50)
 
-cdfs = Dict(algo => success_rate_cdf(tts_results[algo], time_thresholds) for algo in all_labels)
-# idx = sortperm([cdfs[l][end] for l in all_labels], rev = true)
-#
-# p = plot(xscale = :log10, legend = :outerright,
-#     size = (900, 400), margin = 10Plots.px, dpi = 200,
-#     xlabel = "Wall time (s)", ylabel = "Success rate", ylim = (0, 1))
-# for (j, i) in enumerate(idx)
-#     plot!(time_thresholds, cdfs[all_labels[i]], label = all_labels[i], lw = 2.5,
-#         markershape = MARKERS[mod1(j, length(MARKERS))],
-#         linestyle = LINESTYLES[mod1(j, length(LINESTYLES))],
-#         markersize = 4, markerstrokewidth = 0)
-# end
-# p
-
-## Print CDF endpoints instead
-idx = sortperm([cdfs[l][end] for l in all_labels], rev = true)
-for i in idx
-    @info all_labels[i] wall_clock_success=round(cdfs[all_labels[i]][end], digits = 4)
+    cdfs = Dict(algo => success_rate_cdf(tts_results[algo], time_thresholds) for algo in pso_labels)
+    idx = sortperm([cdfs[l][end] for l in pso_labels], rev = true)
+    for i in idx
+        @info pso_labels[i] wall_clock_success=round(cdfs[pso_labels[i]][end], digits = 4)
+    end
+else
+    @warn "No successful solves — cannot build CDF"
 end
 ```
 
 ## Success Rate per Function Heatmap
 ```julia
-cpu_srpf = reduce(hcat, cpu_results[l].success_rate_per_function for l in cpu_labels)
 pso_srpf = reduce(hcat, pso_results[l].success_rate_per_function for l in pso_labels)
-all_srpf = hcat(cpu_srpf, pso_srpf)
 
-# idx = sortperm(mean(all_srpf, dims = 1)[:], rev = false)
-# idx_func = 1:length(test_functions)
-#
-# heatmap(string.(test_functions)[idx_func], all_labels[idx], all_srpf[idx_func, idx]',
-#     cmap = :RdYlGn, xticks = :all, yticks = :all, xrotation = 45, dpi = 200)
-
-## Print per-function results instead
-for (i, l) in enumerate(all_labels)
-    @info l per_func_success=round.(all_srpf[:, i], digits = 2)
+for (i, l) in enumerate(pso_labels)
+    @info l per_func_success=round.(pso_srpf[:, i], digits = 2)
 end
 ```
 
 ## Distance to Minimizer vs. Iterations
 ```julia
-# all_dtm_end = vcat(
-#     [cpu_results[l].distance_to_minimizer[end] for l in cpu_labels],
-#     [pso_results[l].distance_to_minimizer[end] for l in pso_labels])
-# idx = sortperm(all_dtm_end, rev = false)
-#
-# p = plot(xscale = :log10, legend = :outerright,
-#     size = (900, 500), margin = 10Plots.px, ylim = (0, 5),
-#     xlabel = "Iterations", ylabel = "Mean distance to minimum")
-# for (j, i) in enumerate(idx)
-#     l = all_labels[i]
-#     if l in cpu_labels
-#         plot!(cpu_results[l].run_length, cpu_results[l].distance_to_minimizer, label = l,
-#             lw = 2, xlim = (1, 1e5),
-#             markershape = MARKERS[mod1(j, length(MARKERS))],
-#             linestyle = LINESTYLES[mod1(j, length(LINESTYLES))],
-#             markersize = 4, markerstrokewidth = 0)
-#     else
-#         plot!(run_length, pso_results[l].distance_to_minimizer, label = l,
-#             lw = 2, xlim = (1, 1e5),
-#             markershape = MARKERS[mod1(j, length(MARKERS))],
-#             linestyle = LINESTYLES[mod1(j, length(LINESTYLES))],
-#             markersize = 4, markerstrokewidth = 0)
-#     end
-# end
-# p
-
-## Print instead
-all_dtm_end = vcat(
-    [cpu_results[l].distance_to_minimizer[end] for l in cpu_labels],
-    [pso_results[l].distance_to_minimizer[end] for l in pso_labels])
+all_dtm_end = [pso_results[l].distance_to_minimizer[end] for l in pso_labels]
 idx = sortperm(all_dtm_end, rev = false)
 for i in idx
-    @info all_labels[i] dist_to_min=round(all_dtm_end[i], digits = 4)
+    @info pso_labels[i] dist_to_min=round(all_dtm_end[i], digits = 4)
 end
 ```
 
 ## Relative Runtime
 ```julia
-cpu_runtimes = [cpu_results[l].runtime for l in cpu_labels]
-pso_runtimes = [pso_results[l].runtime for l in pso_labels]
-all_runtimes = vcat(cpu_runtimes, pso_runtimes)
+all_runtimes = [pso_results[l].runtime for l in pso_labels]
+ref_rt = minimum(all_runtimes)
+all_runtimes_rel = all_runtimes ./ ref_rt
 
-ref_idx = findfirst(all_labels .== "NelderMead")
-all_runtimes_rel = all_runtimes ./ all_runtimes[ref_idx]
-
-# bar(all_labels, all_runtimes_rel, xrotation = 45, xticks = :all,
-#     ylabel = "Run time relative to NelderMead",
-#     yscale = :log10, yticks = [0.01, 0.1, 1, 10, 100],
-#     legend = false, margin = 25Plots.px)
-
-## Print instead
 idx = sortperm(all_runtimes_rel)
 for i in idx
-    @info all_labels[i] relative_runtime="$(round(all_runtimes_rel[i], digits = 2))x"
+    @info pso_labels[i] relative_runtime="$(round(all_runtimes_rel[i], digits = 2))x"
 end
 ```
