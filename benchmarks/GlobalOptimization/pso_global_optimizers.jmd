@@ -15,20 +15,21 @@ suite, using the [Optimization.jl](https://github.com/SciML/Optimization.jl) int
 using Random
 Random.seed!(42)
 
-using BlackBoxOptimizationBenchmarking, Plots, Optimization, Memoize, Statistics
+using BlackBoxOptimizationBenchmarking, CairoMakie, Optimization, Memoize, Statistics
 import BlackBoxOptimizationBenchmarking: Chain, BenchmarkSetup, BenchmarkResults,
     BBOBFunction, FunctionCallsCounter, solve_problem, pinit, compute_CI
 const BBOB = BlackBoxOptimizationBenchmarking
 
-ENV["GKSwstype"] = "nul"
-gr()
+CairoMakie.activate!(type = "png")
 
 using OptimizationBBO, OptimizationOptimJL, OptimizationEvolutionary, OptimizationNLopt
 using OptimizationMetaheuristics, OptimizationSciPy
 
 using ParallelParticleSwarms
+using Enzyme
 using KernelAbstractions: CPU
 using StaticArrays, LinearAlgebra
+using ADTypes: AutoEnzyme
 
 const PSOKernel     = ParallelParticleSwarms.ParallelPSOKernel
 const SyncPSOKernel = ParallelParticleSwarms.ParallelSyncPSOKernel
@@ -101,20 +102,25 @@ function success_rate_cdf(all_times::Vector{Float64}, time_thresholds::AbstractV
 end
 ```
 
-PSO variants require an `SVector` interface and a custom solve loop.
+PSO variants require an `SVector` interface and a custom solve loop. HybridPSO uses
+Enzyme reverse-mode AD for its L-BFGS local refinement step — ForwardDiff's Dual
+numbers hit StaticArrays `similar_type` paths that break GPU compilation on some
+piecewise BBOB functions; Enzyme differentiates at the LLVM IR level and sidesteps
+that issue.
 
 ```julia
 function pso_solve(opt, f::BBOBFunction, D::Int, maxiters::Int; local_maxiters::Int = 20)
-    obj  = (x, p) -> f(Vector(x))
-    ad   = opt isa HPso ? AutoForwardDiff() : Optimization.SciMLBase.NoAD()
+    obj  = (x, p) -> f(x)
+    ad   = opt isa HPso ? AutoEnzyme() : Optimization.SciMLBase.NoAD()
     optf = OptimizationFunction{false}(obj, ad)
-    lb   = SVector{D}(ntuple(_ -> -5.0, Val(D)))
-    ub   = SVector{D}(ntuple(_ ->  5.0, Val(D)))
-    x0   = SVector{D}(ntuple(_ -> -5.0 + rand() * 10.0, Val(D)))
+    lb   = SVector{D, Float32}(ntuple(_ -> -5.0f0, Val(D)))
+    ub   = SVector{D, Float32}(ntuple(_ ->  5.0f0, Val(D)))
+    x0   = SVector{D, Float32}(ntuple(_ -> -5.0f0 + rand(Float32) * 10.0f0, Val(D)))
     prob = OptimizationProblem{false}(optf, x0, nothing; lb, ub)
 
     if opt isa HPso
-        solve(prob, opt; maxiters, local_maxiters = 50, n_hop_rounds = 1, abstol = 1e-8, reltol = 1e-8)
+        solve(prob, opt; maxiters, local_maxiters = 50, n_hop_rounds = 1,
+              abstol = 1.0f-8, reltol = 1.0f-8)
     else
         solve(prob, opt; maxiters)
     end
@@ -136,7 +142,7 @@ function pso_benchmark(opt, funcs, run_length;
     fmin    = zeros(Float64, Nf, Nr)
     t0 = time()
     for (fi, f) in enumerate(funcs)
-        xopt = SVector{dimension}(f.x_opt[1:dimension])
+        xopt = SVector{dimension, Float32}(f.x_opt[1:dimension])
         for (ri, rl) in enumerate(run_length)
             hits = 0; dsum = 0.0; fsum = 0.0
             for _ in 1:Ntrials
@@ -148,9 +154,10 @@ function pso_benchmark(opt, funcs, run_length;
                 end
                 if sol !== nothing
                     u    = _extract_u(sol, dimension)
-                    fval = sol.objective isa Real ? Float64(sol.objective) : Float64(sol.objective[])
+                    fval = sol.objective isa Real ? Float64(sol.objective) :
+                                                    Float64(sol.objective[])
                     hits += abs(fval - f.f_opt) < Δf ? 1 : 0
-                    dsum += norm(u .- xopt)
+                    dsum += Float64(norm(u .- xopt))
                     fsum += fval - f.f_opt
                 end
             end
@@ -183,24 +190,28 @@ function pso_tts(opt, funcs; Ntrials = 10, dimension = 3, Δf = 1e-6,
         local_maxiters = 20, max_run_length = 50_000)
     all_times = Float64[]
     D  = dimension
-    lb = SVector{D}(ntuple(_ -> -5.0, Val(D)))
-    ub = SVector{D}(ntuple(_ ->  5.0, Val(D)))
+    lb = SVector{D, Float32}(ntuple(_ -> -5.0f0, Val(D)))
+    ub = SVector{D, Float32}(ntuple(_ ->  5.0f0, Val(D)))
     for f in funcs
         for _ in 1:Ntrials
-            tracked_f, t0_ref, tts_ref = make_success_tracker(f, f.f_opt, Δf)
-            obj  = (x, p) -> tracked_f(Vector(x))
-            ad   = opt isa HPso ? AutoForwardDiff() : Optimization.SciMLBase.NoAD()
+            obj  = (x, p) -> f(x)
+            ad   = opt isa HPso ? AutoEnzyme() : Optimization.SciMLBase.NoAD()
             optf = OptimizationFunction{false}(obj, ad)
-            x0   = SVector{D}(ntuple(_ -> -5.0 + rand() * 10.0, Val(D)))
+            x0   = SVector{D, Float32}(ntuple(_ -> -5.0f0 + rand(Float32) * 10.0f0, Val(D)))
             prob = OptimizationProblem{false}(optf, x0, nothing; lb, ub)
+            t0 = time()
             try
-                t0_ref[] = time()
-                if opt isa HPso
-                    solve(prob, opt; maxiters = max_run_length, local_maxiters = 50, n_hop_rounds = 1, abstol = 1e-8, reltol = 1e-8)
+                sol = if opt isa HPso
+                    solve(prob, opt; maxiters = max_run_length,
+                          local_maxiters = 50, n_hop_rounds = 1,
+                          abstol = 1.0f-8, reltol = 1.0f-8)
                 else
                     solve(prob, opt; maxiters = max_run_length)
                 end
-                push!(all_times, tts_ref[])
+                elapsed = time() - t0
+                fval = sol.objective isa Real ? Float64(sol.objective) :
+                                                Float64(sol.objective[])
+                push!(all_times, abs(fval - f.f_opt) < Δf ? elapsed : Inf)
             catch err
                 push!(all_times, Inf)
                 @warn "pso tts failed" f err
@@ -220,7 +231,7 @@ chain = (t; isboxed = false) -> Chain(
 dimension      = 3
 test_functions = BBOB.bbob_suite(Val(dimension))
 run_length     = round.(Int, 10 .^ LinRange(1, 4, 10))
-num_particles  = 1054
+num_particles  = 8
 
 PSO_KEYS = Set(["SerialPSO", "PSOKernel", "SyncPSOKernel", "HybridPSO_LBFGS"])
 
@@ -277,13 +288,19 @@ results
 labels = collect(keys(setup))
 idx = sortperm([b.success_rate[end] for b in results], rev = true)
 
-p = plot(xscale = :log10, legend = :outerright,
-    size = (700, 350), margin = 10Plots.px, dpi = 200)
+fig = Figure(size = (1000, 400))
+ax = Axis(fig[1, 1];
+    xscale = log10,
+    xlabel = "Iterations",
+    ylabel = "Success rate",
+    limits = ((1, 1e5), (0, 1)),
+)
 for i in idx
-    plot!(results[i], label = labels[i], showribbon = false,
-        lw = 2.5, xlim = (1, 1e5), x = :run_length, markershape = :none)
+    lines!(ax, results[i].run_length, results[i].success_rate;
+        label = labels[i], linewidth = 2.5)
 end
-p
+Legend(fig[1, 2], ax; framevisible = false)
+fig
 ```
 
 ## Test all (wall-clock time to success)
@@ -315,13 +332,19 @@ time_thresholds = 10 .^ range(log10(t_lo), log10(t_hi), length = 50)
 cdfs = Dict(algo => success_rate_cdf(tts_results[algo], time_thresholds) for algo in labels)
 idx  = sortperm([cdfs[l][end] for l in labels], rev = true)
 
-p = plot(xscale = :log10, legend = :outerright,
-    size = (700, 350), margin = 10Plots.px, dpi = 200,
-    xlabel = "Wall time (s)", ylabel = "Success rate", ylim = (0, 1))
+fig = Figure(size = (1000, 400))
+ax = Axis(fig[1, 1];
+    xscale = log10,
+    xlabel = "Wall time (s)",
+    ylabel = "Success rate",
+    limits = (nothing, (0, 1)),
+)
 for i in idx
-    plot!(time_thresholds, cdfs[labels[i]], label = labels[i], lw = 2.5)
+    lines!(ax, time_thresholds, cdfs[labels[i]];
+        label = labels[i], linewidth = 2.5)
 end
-p
+Legend(fig[1, 2], ax; framevisible = false)
+fig
 ```
 
 ## Success Rate per Function Heatmap
@@ -332,14 +355,20 @@ success_rate_per_function = reduce(hcat, b.success_rate_per_function for b in re
 idx = sortperm(mean(success_rate_per_function, dims = 1)[:], rev = false)
 idxfunc = 1:length(test_functions)
 
-p = heatmap(
-    string.(test_functions)[idxfunc], labels[idx], success_rate_per_function[idxfunc, idx]',
-    cmap = :RdYlGn,
-    xticks = :all,
-    yticks = :all,
-    xrotation = 45,
-    dpi = 200
+fname = string.(test_functions)[idxfunc]
+lname = labels[idx]
+data  = success_rate_per_function[idxfunc, idx]
+
+fig = Figure(size = (1100, 550))
+ax = Axis(fig[1, 1];
+    xticks = (1:length(fname), fname),
+    yticks = (1:length(lname), lname),
+    xticklabelrotation = π/4,
 )
+hm = heatmap!(ax, 1:length(fname), 1:length(lname), data;
+    colormap = :RdYlGn, colorrange = (0, 1))
+Colorbar(fig[1, 2], hm; label = "Success rate")
+fig
 ```
 
 ## Distance to Minimizer vs. Iterations
@@ -348,16 +377,19 @@ p = heatmap(
 labels = collect(keys(setup))
 idx = sortperm([b.distance_to_minimizer[end] for b in results], rev = false)
 
-p = plot(xscale = :log10, legend = :outerright,
-    size = (900, 500), margin = 10Plots.px, ylim = (0, 5))
+fig = Figure(size = (1000, 500))
+ax = Axis(fig[1, 1];
+    xscale = log10,
+    xlabel = "Iterations",
+    ylabel = "Mean distance to minimum",
+    limits = ((1, 1e5), (0, 5)),
+)
 for i in idx
-    plot!(
-        results[i].run_length, results[i].distance_to_minimizer, label = labels[i],
-        showribbon = false, lw = 2, xlim = (1, 1e5),
-        xlabel = "Iterations", ylabel = "Mean distance to minimum"
-    )
+    lines!(ax, results[i].run_length, results[i].distance_to_minimizer;
+        label = labels[i], linewidth = 2)
 end
-p
+Legend(fig[1, 2], ax; framevisible = false)
+fig
 ```
 
 ## Relative Runtime
@@ -368,9 +400,13 @@ ref = findfirst("NelderMead" .== labels)
 runtimes = getfield.(results, :runtime)
 runtimes = runtimes ./ runtimes[ref]
 
-bar(
-    labels, runtimes, xrotation = 45, xticks = :all, ylabel = "Run time relative to NM",
-    yscale = :log10, yticks = [0.1, 1, 10, 100],
-    legend = false, margin = 25Plots.px
+fig = Figure(size = (1000, 500))
+ax = Axis(fig[1, 1];
+    xticks = (1:length(labels), labels),
+    xticklabelrotation = π/4,
+    ylabel = "Run time relative to NM",
+    yscale = log10,
 )
+barplot!(ax, 1:length(labels), runtimes)
+fig
 ```
