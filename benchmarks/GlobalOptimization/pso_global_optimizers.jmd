@@ -27,7 +27,8 @@ using OptimizationMetaheuristics, OptimizationSciPy
 
 using ParallelParticleSwarms
 using Enzyme
-using KernelAbstractions: CPU
+using KernelAbstractions
+using CUDA
 using StaticArrays, LinearAlgebra
 using ADTypes: AutoEnzyme
 
@@ -36,7 +37,7 @@ const SyncPSOKernel = ParallelParticleSwarms.ParallelSyncPSOKernel
 const SerPSO        = ParallelParticleSwarms.SerialPSO
 const HPso          = ParallelParticleSwarms.HybridPSO
 
-const BACKEND = CPU()
+const BACKEND = CUDABackend()
 ```
 
 ```julia
