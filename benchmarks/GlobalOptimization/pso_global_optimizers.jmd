@@ -27,8 +27,8 @@ using OptimizationBBO, OptimizationOptimJL, OptimizationEvolutionary, Optimizati
 using OptimizationMetaheuristics, OptimizationSciPy
 
 using ParallelParticleSwarms
-using KernelAbstractions
-using CUDA
+using ForwardDiff
+using KernelAbstractions: CPU
 using StaticArrays, LinearAlgebra
 
 const PSOKernel     = ParallelParticleSwarms.ParallelPSOKernel
@@ -36,7 +36,7 @@ const SyncPSOKernel = ParallelParticleSwarms.ParallelSyncPSOKernel
 const SerPSO        = ParallelParticleSwarms.SerialPSO
 const HPso          = ParallelParticleSwarms.HybridPSO
 
-const BACKEND = CUDABackend()
+const BACKEND = CPU()
 ```
 
 ```julia
@@ -57,15 +57,10 @@ function benchmark_time_to_success(
     all_times = Float64[]
     for f in funcs
         for _ in 1:Ntrials
-            try
-                t0  = time()
-                sol = solve_problem_baseline(optimizer, f, dimension, max_run_length)
-                elapsed = time() - t0
-                push!(all_times, sol.objective < Δf + f.f_opt ? elapsed : Inf)
-            catch err
-                push!(all_times, Inf)
-                @warn "baseline tts failed" f err
-            end
+            t0  = time()
+            sol = solve_problem_baseline(optimizer, f, dimension, max_run_length)
+            elapsed = time() - t0
+            push!(all_times, sol.objective < Δf + f.f_opt ? elapsed : Inf)
         end
     end
     return all_times
@@ -82,10 +77,21 @@ end
 
 ```julia
 _to_f64(x::Real) = Float64(x)
+_to_f64(x::ForwardDiff.Dual) = Float64(ForwardDiff.value(x))
 _to_f64(x)       = Float64(x[])
 
+_value(x::Real) = x
+_value(x::ForwardDiff.Dual) = ForwardDiff.value(x)
+_penalty(x) = eltype(x) <: ForwardDiff.Dual ? zero(first(x)) + 1.0f10 : 1.0f10
+
+function pso_objective(f::BBOBFunction, x)
+    any(xi -> !isfinite(_value(xi)) || abs(_value(xi)) > 15, x) && return _penalty(x)
+    y = f(x)
+    y isa ForwardDiff.Dual ? y : Float32(y)
+end
+
 function _pso_problem(f::BBOBFunction, D::Int; x0 = nothing)
-    optf = OptimizationFunction{false}((x, p) -> f(x), Optimization.SciMLBase.NoAD())
+    optf = OptimizationFunction{false}((x, p) -> pso_objective(f, x), Optimization.SciMLBase.NoAD())
     lb   = SVector{D, Float32}(ntuple(_ -> -5.0f0, Val(D)))
     ub   = SVector{D, Float32}(ntuple(_ ->  5.0f0, Val(D)))
     x0   = x0 === nothing ?
@@ -124,19 +130,12 @@ function pso_benchmark(opt, funcs, run_length;
         for (ri, rl) in enumerate(run_length)
             hits = 0; dsum = 0.0; fsum = 0.0
             for _ in 1:Ntrials
-                sol = try
-                    pso_solve(opt, f, dimension, rl; local_maxiters)
-                catch err
-                    @warn "pso_solve failed" f rl err
-                    nothing
-                end
-                if sol !== nothing
-                    u    = _extract_u(sol, dimension)
-                    fval = _to_f64(sol.objective)
-                    hits += abs(fval - f.f_opt) < Δf ? 1 : 0
-                    dsum += Float64(norm(u .- xopt))
-                    fsum += fval - f.f_opt
-                end
+                sol = pso_solve(opt, f, dimension, rl; local_maxiters)
+                u    = _extract_u(sol, dimension)
+                fval = _to_f64(sol.objective)
+                hits += abs(fval - f.f_opt) < Δf ? 1 : 0
+                dsum += Float64(norm(u .- xopt))
+                fsum += fval - f.f_opt
             end
             success[fi, ri] = hits / Ntrials
             dist[fi, ri]    = dsum / Ntrials
@@ -172,20 +171,15 @@ function pso_tts(opt, funcs; Ntrials = 40, dimension = 3, Δf = 1e-6,
             x0   = SVector{D, Float32}(ntuple(_ -> -5.0f0 + rand(Float32) * 10.0f0, Val(D)))
             prob = _pso_problem(f, D; x0)
             t0 = time()
-            try
-                sol = if opt isa HPso
-                    solve(prob, opt; maxiters = max_run_length,
-                          local_maxiters, abstol = 1.0f-8, reltol = 1.0f-8)
-                else
-                    solve(prob, opt; maxiters = max_run_length)
-                end
-                elapsed = time() - t0
-                fval = _to_f64(sol.objective)
-                push!(all_times, abs(fval - f.f_opt) < Δf ? elapsed : Inf)
-            catch err
-                push!(all_times, Inf)
-                @warn "pso tts failed" f err
+            sol = if opt isa HPso
+                solve(prob, opt; maxiters = max_run_length,
+                      local_maxiters, abstol = 1.0f-8, reltol = 1.0f-8)
+            else
+                solve(prob, opt; maxiters = max_run_length)
             end
+            elapsed = time() - t0
+            fval = _to_f64(sol.objective)
+            push!(all_times, abs(fval - f.f_opt) < Δf ? elapsed : Inf)
         end
     end
     all_times
@@ -250,6 +244,7 @@ results = Array{BBOB.BenchmarkResults}(undef, length(setup))
 for (i, algo) in enumerate(labels)
     algo in PSO_KEYS || continue
     results[i] = run_bench(algo)
+    @info "PSO success rate" algo success_rate = round(results[i].success_rate[end], digits = 3)
 end
 
 for (i, algo) in enumerate(labels)

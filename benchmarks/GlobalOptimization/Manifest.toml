@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "722b445c16803a0dd2918cc7e0521695b9a56a9e"
+project_hash = "f58843b89b7bdb6186f6a4286aab2f19aca6704b"
 
 [[deps.ADTypes]]
 git-tree-sha1 = "bbc22a9a08a0ef6460041086d8a7b27940ed4ffd"
@@ -146,10 +146,10 @@ version = "0.6.5"
 weakdeps = ["HTTP", "Sockets"]
 
 [[deps.BlackBoxOptimizationBenchmarking]]
-deps = ["Distributions", "LinearAlgebra", "Memoize", "Optim", "Optimization", "RecipesBase"]
-git-tree-sha1 = "7046f70bbd2c8559aed0fb17ff181ef5df048852"
+deps = ["Distributions", "LinearAlgebra", "Optim", "Optimization", "Random", "RecipesBase", "StaticArrays"]
+git-tree-sha1 = "a3884aec5ec2966e48c8408fe7ddcbdd232be8c6"
 uuid = "4552ee2b-11da-5aef-8e78-0d48532001f1"
-version = "1.0.2"
+version = "2.0.1"
 
 [[deps.BracketingNonlinearSolve]]
 deps = ["CommonSolve", "ConcreteStructs", "NonlinearSolveBase", "PrecompileTools", "Reexport", "SciMLBase"]
@@ -543,9 +543,9 @@ version = "1.0.7"
 
 [[deps.Enzyme]]
 deps = ["CEnum", "EnzymeCore", "Enzyme_jll", "GPUCompiler", "InteractiveUtils", "LLVM", "Libdl", "LinearAlgebra", "ObjectFile", "PrecompileTools", "Preferences", "Printf", "Random", "SparseArrays"]
-git-tree-sha1 = "78e82f8d6343a4765d9bc46690f9b4c85dd843f5"
+git-tree-sha1 = "fc295f34c17650f03f84b0da76401d89b43c9289"
 uuid = "7da242da-08ed-463a-9acd-ee780be4f1d9"
-version = "0.13.160"
+version = "0.13.161"
 
     [deps.Enzyme.extensions]
     EnzymeBFloat16sExt = "BFloat16s"
