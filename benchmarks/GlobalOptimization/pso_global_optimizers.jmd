@@ -28,7 +28,8 @@ using OptimizationMetaheuristics, OptimizationSciPy
 
 using ParallelParticleSwarms
 using ForwardDiff
-using KernelAbstractions: CPU
+using KernelAbstractions
+using CUDA
 using StaticArrays, LinearAlgebra
 
 const PSOKernel     = ParallelParticleSwarms.ParallelPSOKernel
@@ -36,7 +37,7 @@ const SyncPSOKernel = ParallelParticleSwarms.ParallelSyncPSOKernel
 const SerPSO        = ParallelParticleSwarms.SerialPSO
 const HPso          = ParallelParticleSwarms.HybridPSO
 
-const BACKEND = CPU()
+const BACKEND = CUDABackend()
 ```
 
 ```julia
@@ -196,7 +197,7 @@ dimension      = 3
 test_functions = BBOB.bbob_suite(Val(dimension))
 run_length     = round.(Int, 10 .^ LinRange(1, 5, 30))
 Ntrials        = 40
-num_particles  = 256
+num_particles  = 10_000
 
 const SUCCESS_Δf = 1e-6
 

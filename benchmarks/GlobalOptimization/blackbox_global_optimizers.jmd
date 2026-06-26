@@ -114,12 +114,12 @@ chain = (t;
     0.9
 )
 
-test_functions = BBOB.list_functions()
 dimension = 3
+test_functions = BBOB.bbob_suite(Val(dimension))
 run_length = round.(Int, 10 .^ LinRange(1, 5, 30))
 
 @memoize run_bench(algo) = BBOB.benchmark(
-    setup[algo], test_functions, run_length, Ntrials = 40, dimension = dimension)
+    setup[algo], test_functions, run_length, Ntrials = 40)
 @memoize run_tts(algo) = benchmark_time_to_success(
     setup[algo], test_functions, Ntrials = 40, dimension = dimension)
 ```
@@ -167,7 +167,7 @@ setup = Dict(
 ```julia
 @time b = BBOB.benchmark(
     chain(OptimizationMetaheuristics.CGSA(), isboxed = true),
-    test_functions[1:10], 100:500:10_000, Ntrials = 10, dimension = 3
+    test_functions[1:10], 100:500:10_000, Ntrials = 10
 )
 
 plot(b)
