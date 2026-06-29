@@ -15,13 +15,12 @@ suite (v2 API), using the [Optimization.jl](https://github.com/SciML/Optimizatio
 using Random
 Random.seed!(42)
 
-using BlackBoxOptimizationBenchmarking, Plots, Optimization, Memoize, Statistics
+using BlackBoxOptimizationBenchmarking, CairoMakie, Optimization, Memoize, Statistics
 import BlackBoxOptimizationBenchmarking: Chain, BenchmarkSetup, BenchmarkResults,
     BBOBFunction, FunctionCallsCounter, solve_problem, pinit, compute_CI
 const BBOB = BlackBoxOptimizationBenchmarking
 
-ENV["GKSwstype"] = "nul"
-gr()
+CairoMakie.activate!()
 
 using OptimizationBBO, OptimizationOptimJL, OptimizationEvolutionary, OptimizationNLopt
 using OptimizationMetaheuristics, OptimizationSciPy
@@ -29,6 +28,7 @@ using OptimizationMetaheuristics, OptimizationSciPy
 using ParallelParticleSwarms
 using ForwardDiff
 using KernelAbstractions
+using CUDA
 using StaticArrays, LinearAlgebra
 
 const PSOKernel     = ParallelParticleSwarms.ParallelPSOKernel
@@ -36,12 +36,12 @@ const SyncPSOKernel = ParallelParticleSwarms.ParallelSyncPSOKernel
 const SerPSO        = ParallelParticleSwarms.SerialPSO
 const HPso          = ParallelParticleSwarms.HybridPSO
 
-const BACKEND = CPU()
+const BACKEND = CUDABackend()
 ```
 
 ```julia
-const MARKERS = [:circle, :diamond, :utriangle, :square, :star5, :dtriangle, :pentagon,
-    :hexagon, :cross, :xcross, :rtriangle, :ltriangle, :star4, :star8, :heptagon, :octagon,
+const MARKERS = [:circle, :diamond, :utriangle, :rect, :star5, :dtriangle, :pentagon,
+    :hexagon, :cross, :xcross, :rtriangle, :ltriangle, :star4, :star8, :circle, :rect,
     :vline, :hline, :+, :x]
 const LINESTYLES = [:solid, :dash, :dot, :dashdot, :dashdotdot]
 
@@ -261,17 +261,19 @@ results
 labels = collect(keys(setup))
 idx = sortperm([b.success_rate[end] for b in results], rev = true)
 
-p = plot(xscale = :log10, legend = :outerright,
-    size = (1000, 400), margin = 10Plots.px, dpi = 200,
+fig = Figure(size = (1200, 400))
+ax = Axis(fig[1, 1], xscale = log10,
     xlabel = "Function evaluations", ylabel = "Success rate",
-    xlim = (1, 1e7), ylim = (0, 1))
+    limits = (1, 1e7, 0, 1))
 for (j, i) in enumerate(idx)
-    plot!(results[i].callcount, results[i].success_rate; label = labels[i], lw = 2.5,
-        markershape = MARKERS[mod1(j, length(MARKERS))],
+    scatterlines!(ax, results[i].callcount, results[i].success_rate; label = labels[i],
+        linewidth = 2.5,
+        marker = MARKERS[mod1(j, length(MARKERS))],
         linestyle = LINESTYLES[mod1(j, length(LINESTYLES))],
-        markersize = 4, markerstrokewidth = 0)
+        markersize = 8)
 end
-p
+Legend(fig[1, 2], ax, framevisible = false)
+fig
 ```
 
 ## Success Rate vs. Iterations
@@ -280,17 +282,19 @@ p
 labels = collect(keys(setup))
 idx = sortperm([b.success_rate[end] for b in results], rev = true)
 
-p = plot(xscale = :log10, legend = :outerright,
-    size = (1000, 400), margin = 10Plots.px, dpi = 200,
+fig = Figure(size = (1200, 400))
+ax = Axis(fig[1, 1], xscale = log10,
     xlabel = "Iterations", ylabel = "Success rate",
-    xlim = (1, 1e5), ylim = (0, 1))
+    limits = (1, 1e5, 0, 1))
 for (j, i) in enumerate(idx)
-    plot!(results[i].run_length, results[i].success_rate; label = labels[i], lw = 2.5,
-        markershape = MARKERS[mod1(j, length(MARKERS))],
+    scatterlines!(ax, results[i].run_length, results[i].success_rate; label = labels[i],
+        linewidth = 2.5,
+        marker = MARKERS[mod1(j, length(MARKERS))],
         linestyle = LINESTYLES[mod1(j, length(LINESTYLES))],
-        markersize = 4, markerstrokewidth = 0)
+        markersize = 8)
 end
-p
+Legend(fig[1, 2], ax, framevisible = false)
+fig
 ```
 
 ## Test all (wall-clock time to success)
@@ -322,16 +326,19 @@ time_thresholds = 10 .^ range(log10(t_lo), log10(t_hi), length = 50)
 cdfs = Dict(algo => success_rate_cdf(tts_results[algo], time_thresholds) for algo in labels)
 idx  = sortperm([cdfs[l][end] for l in labels], rev = true)
 
-p = plot(xscale = :log10, legend = :outerright,
-    size = (1000, 400), margin = 10Plots.px, dpi = 200,
-    xlabel = "Wall time (s)", ylabel = "Success rate", ylim = (0, 1))
+fig = Figure(size = (1200, 400))
+ax = Axis(fig[1, 1], xscale = log10,
+    xlabel = "Wall time (s)", ylabel = "Success rate",
+    limits = (nothing, nothing, 0, 1))
 for (j, i) in enumerate(idx)
-    plot!(time_thresholds, cdfs[labels[i]]; label = labels[i], lw = 2.5,
-        markershape = MARKERS[mod1(j, length(MARKERS))],
+    scatterlines!(ax, time_thresholds, cdfs[labels[i]]; label = labels[i],
+        linewidth = 2.5,
+        marker = MARKERS[mod1(j, length(MARKERS))],
         linestyle = LINESTYLES[mod1(j, length(LINESTYLES))],
-        markersize = 4, markerstrokewidth = 0)
+        markersize = 8)
 end
-p
+Legend(fig[1, 2], ax, framevisible = false)
+fig
 ```
 
 ## Success Rate per Function Heatmap
@@ -342,11 +349,16 @@ success_rate_per_function = reduce(hcat, b.success_rate_per_function for b in re
 idx = sortperm(mean(success_rate_per_function, dims = 1)[:], rev = false)
 idxfunc = 1:length(test_functions)
 
-heatmap(
-    string.(test_functions)[idxfunc], labels[idx], success_rate_per_function[idxfunc, idx]',
-    colormap = :RdYlGn, clims = (0, 1),
-    xticks = :all, yticks = :all, xrotation = 45,
-    size = (1100, 550), dpi = 200, colorbar_title = "Success rate")
+data = success_rate_per_function[idxfunc, idx]
+fig = Figure(size = (1200, 600))
+ax = Axis(fig[1, 1],
+    xticks = (1:length(idxfunc), string.(test_functions)[idxfunc]),
+    yticks = (1:length(idx), labels[idx]),
+    xticklabelrotation = π / 4)
+hm = heatmap!(ax, 1:length(idxfunc), 1:length(idx), data;
+    colormap = :RdYlGn, colorrange = (0, 1))
+Colorbar(fig[1, 2], hm, label = "Success rate")
+fig
 ```
 
 ## Distance to Minimizer vs. Iterations
@@ -355,17 +367,19 @@ heatmap(
 labels = collect(keys(setup))
 idx = sortperm([b.distance_to_minimizer[end] for b in results], rev = false)
 
-p = plot(xscale = :log10, legend = :outerright,
-    size = (1000, 500), margin = 10Plots.px, dpi = 200,
+fig = Figure(size = (1200, 500))
+ax = Axis(fig[1, 1], xscale = log10,
     xlabel = "Iterations", ylabel = "Mean distance to minimum",
-    xlim = (1, 1e5), ylim = (0, 5))
+    limits = (1, 1e5, 0, 5))
 for (j, i) in enumerate(idx)
-    plot!(results[i].run_length, results[i].distance_to_minimizer; label = labels[i], lw = 2,
-        markershape = MARKERS[mod1(j, length(MARKERS))],
+    scatterlines!(ax, results[i].run_length, results[i].distance_to_minimizer;
+        label = labels[i], linewidth = 2,
+        marker = MARKERS[mod1(j, length(MARKERS))],
         linestyle = LINESTYLES[mod1(j, length(LINESTYLES))],
-        markersize = 4, markerstrokewidth = 0)
+        markersize = 8)
 end
-p
+Legend(fig[1, 2], ax, framevisible = false)
+fig
 ```
 
 ## Relative Runtime
@@ -376,7 +390,11 @@ ref = findfirst("NelderMead" .== labels)
 runtimes = getfield.(results, :runtime)
 runtimes = runtimes ./ runtimes[ref]
 
-bar(labels, runtimes, xrotation = 45, xticks = :all,
-    ylabel = "Run time relative to NM", yscale = :log10,
-    legend = false, size = (1000, 500), margin = 25Plots.px, dpi = 200)
+fig = Figure(size = (1200, 500))
+ax = Axis(fig[1, 1], yscale = log10,
+    ylabel = "Run time relative to NM",
+    xticks = (1:length(labels), labels),
+    xticklabelrotation = π / 4)
+barplot!(ax, 1:length(labels), runtimes)
+fig
 ```
