@@ -184,7 +184,8 @@ single_setup = BenchmarkSetup(NLopt.GN_CRS2_LM(), isboxed = true)
 sol = [BBOB.solve_problem(single_setup, f, 3, 5_000) for in in 1:10]
 @info [sol.objective < Δf + f.f_opt for sol in sol]
 
-p = plot(f, size = (600, 600), zoom = 1.5)
+f_plot = BBOB.bbob_suite(Val(2))[3]
+p = plot(f_plot, size = (600, 600), zoom = 1.5)
 for sol in sol
     scatter!(sol.u[1:1], sol.u[2:2], label = "", c = "blue",
         marker = :xcross, markersize = 5, markerstrokewidth = 0)
