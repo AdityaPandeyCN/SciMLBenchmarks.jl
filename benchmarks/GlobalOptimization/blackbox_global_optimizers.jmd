@@ -198,7 +198,7 @@ p
 ```julia
 results = Array{BBOB.BenchmarkResults}(undef, length(setup))
 
-Threads.@threads for (i, algo) in collect(enumerate(keys(setup)))
+for (i, algo) in enumerate(keys(setup))
     results[i] = run_bench(algo)
 end
 
