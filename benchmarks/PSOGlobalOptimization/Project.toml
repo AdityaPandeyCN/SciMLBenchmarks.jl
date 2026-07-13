@@ -1,5 +1,5 @@
 [compat]
-BlackBoxOptimizationBenchmarking = "2"
+BlackBoxOptimizationBenchmarking = "2.0.1"
 CUDA = "5.11"
 ForwardDiff = "0.10, 1"
 Memoize = "0.4"
