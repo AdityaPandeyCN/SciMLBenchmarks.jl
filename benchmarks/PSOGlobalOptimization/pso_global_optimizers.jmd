@@ -215,7 +215,7 @@ setup = Dict(
     # "BBO_de_rand_2_bin"              => chain(BBO_de_rand_2_bin(), isboxed = true),
     "OptimizationMetaheuristics.ECA"   => chain(OptimizationMetaheuristics.ECA(), isboxed = true),
     # "OptimizationMetaheuristics.DE"  => chain(OptimizationMetaheuristics.DE(), isboxed = true),
-    "ScipyDifferentialEvolution"       => chain(ScipyDifferentialEvolution(), isboxed = true),
+    #"ScipyDifferentialEvolution"       => chain(ScipyDifferentialEvolution(), isboxed = true),
     "SerialPSO"        => SerPSO(512),
     "PSOKernel"        => PSOKernel(num_particles; backend = BACKEND, global_update = true),
     "SyncPSOKernel"    => SyncPSOKernel(num_particles; backend = BACKEND),
