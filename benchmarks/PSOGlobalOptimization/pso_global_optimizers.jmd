@@ -224,7 +224,8 @@ setup = Dict(
 
 @memoize run_bench(algo) = algo in PSO_KEYS ?
     pso_benchmark(setup[algo], test_functions, run_length;
-        Ntrials, dimension, Δf = SUCCESS_Δf, n_particles = num_particles) :
+        Ntrials, dimension, Δf = SUCCESS_Δf,
+        n_particles = algo == "SerialPSO" ? 512 : num_particles) :
     BBOB.benchmark(setup[algo], test_functions, run_length;
         Ntrials, Δf = SUCCESS_Δf)
 
