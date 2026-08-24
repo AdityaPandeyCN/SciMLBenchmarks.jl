@@ -222,7 +222,7 @@ setup = Dict(
 
 ## Test all (iterations)
 
-```julia
+```julia; eval=false
 labels  = collect(keys(setup))
 results = Array{BBOB.BenchmarkResults}(undef, length(setup))
 
@@ -242,7 +242,7 @@ results
 
 ## Success Rate vs. Function Evaluations
 
-```julia
+```julia; eval=false
 labels = collect(keys(setup))
 # HybridPSO's L-BFGS evaluation count is not available.
 idx = filter(i -> labels[i] != "HybridPSO_LBFGS",
@@ -263,7 +263,7 @@ fig
 
 ## Success Rate vs. Iterations
 
-```julia
+```julia; eval=false
 labels = collect(keys(setup))
 idx = sortperm([b.success_rate[end] for b in results], rev = true)
 
@@ -319,7 +319,7 @@ fig
 
 ## Success Rate per Function Heatmap
 
-```julia
+```julia; eval=false
 labels = collect(keys(setup))
 success_rate_per_function = reduce(hcat, b.success_rate_per_function for b in results)
 idx = sortperm(vec(mean(success_rate_per_function, dims = 1)), rev = false)
@@ -339,7 +339,7 @@ fig
 
 ## Distance to Minimizer vs. Iterations
 
-```julia
+```julia; eval=false
 labels = collect(keys(setup))
 idx = sortperm([b.distance_to_minimizer[end] for b in results], rev = false)
 
@@ -358,7 +358,7 @@ fig
 
 ## Relative Runtime
 
-```julia
+```julia; eval=false
 labels = collect(keys(setup))
 ref = findfirst(==("NelderMead"), labels)
 runtimes = getfield.(results, :runtime)
