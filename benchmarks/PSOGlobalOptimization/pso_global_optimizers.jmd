@@ -283,6 +283,7 @@ fig
 ## Test all (wall-clock time)
 
 ```julia
+labels = collect(keys(setup))
 walltime_results = Dict{String, NamedTuple}()
 
 for algo in labels
