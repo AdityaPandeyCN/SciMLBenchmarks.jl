@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "5ec2344b91fd21c93f4af2054e71ce787f01552a"
+project_hash = "272d32253dab77e5c74937a9f6caca75d7a374c3"
 
 [[deps.ADTypes]]
 deps = ["PrecompileTools"]
@@ -2003,9 +2003,9 @@ version = "1.58.0+0"
 
 [[deps.ParallelParticleSwarms]]
 deps = ["ADTypes", "Adapt", "Atomix", "DiffEqGPU", "Enzyme", "ForwardDiff", "KernelAbstractions", "LineSearch", "NonlinearSolveBase", "OptimizationBase", "PrecompileTools", "QuasiMonteCarlo", "Random", "RecursiveArrayTools", "SciMLBase", "SciMLOperators", "Setfield", "SimpleNonlinearSolve", "SimpleOptimization", "StaticArrays"]
-git-tree-sha1 = "9344437018eedac14b769a0aceed604c453e369a"
+git-tree-sha1 = "531caf990377a4844604b60e681ea7e3ba4f9eb7"
 uuid = "ab63da0c-63b4-40fa-a3b7-d2cba5be6419"
-version = "1.4.0"
+version = "1.6.0"
 
 [[deps.Parameters]]
 deps = ["OrderedCollections", "UnPack"]
