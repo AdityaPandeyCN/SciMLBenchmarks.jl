@@ -24,7 +24,7 @@ objective below `f_opt + 1e-6`. Two experiments are run:
    true minimizer, and number of objective evaluations. This feeds the iteration, evaluations,
    heatmap and distance plots. Success rates are pooled over dimensions 3, 5 and 10.
 2. **Time-to-success experiment.** Each optimizer gets one run per (function, trial) with a
-   10,000-iteration budget, and we record the wall-clock time at which it *first* reached the
+   10,000-iteration budget (HybridPSO: 100 PSO iterations, then L-BFGS), and we record the wall-clock time at which it *first* reached the
    target. From those times we build a CDF: for a time budget T, what fraction of runs were
    solved within T seconds. This feeds the wall-clock plot and the relative-runtime bar chart.
 
@@ -306,7 +306,7 @@ for l in sort(LABELS; by = l -> -mins(k -> k[1] == l))
     b, s = mins(k -> k[1:2] == (l, :budget)), mins(k -> k[1:2] == (l, :tts))
     @printf "%-30s %8.1fm %8.1fm %8.1fm\n" l b s b + s
 end
-@printf "%-30s %29.1fm\n" "all" mins(_ -> true)
+@printf "%-30s %28.1fm\n" "all" mins(_ -> true)
 println("\nTop 10 (solver, experiment, function):")
 for (k, t) in first(sort(collect(WALL); by = last, rev = true), 10)
     @printf "  %-30s %-7s %-4s %7.1fm\n" k[1] k[2] k[3] t / 60
