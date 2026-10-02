@@ -63,6 +63,8 @@ const SERIAL_PARTICLES = 512       # CPU swarm
 const RUN_LENGTH = round.(Int, 10 .^ LinRange(1, 4, 15))   # budget experiment
 const MAX_TTS_ITERS = 10_000    # time-to-success experiment
 const TTS_CHUNK = 20        # GPU: read back the best cost every this many iterations
+const HYBRID_PSO_ITERS = 100   # Hybrid PSO phase length in the time experiment
+const WALL = Dict{Tuple{String, Symbol, Symbol}, Float64}()   # (solver, experiment, function) => seconds
 # f4, f7, f10 crash the GPU kernels and are excluded.
 suite(D) = filter(f -> nameof(f.f) ∉ (:f4, :f7, :f10), BBOB.bbob_suite(Val(D)))
 const SUITES = (suite(3), suite(5), suite(10))
@@ -160,12 +162,15 @@ function benchmark(algo)
     success = zeros(Nf, length(RUN_LENGTH)); dist = zeros(Nf, length(RUN_LENGTH))
     calls = zeros(Nf, length(RUN_LENGTH))
     for funcs in SUITES, (fi, f) in enumerate(funcs)
-        run_one(algo, f, 10)                               # warm-up per (function, D): compile, discard
-        for (ri, rl) in enumerate(RUN_LENGTH), _ in 1:NTRIALS
-            fval, u, n = run_one(algo, f, rl)
-            success[fi, ri] += fval < f.f_opt + Δf
-            dist[fi, ri] += norm(u .- f.x_opt)
-            calls[fi, ri] += n
+        k = (algo, :budget, nameof(f.f))
+        WALL[k] = get(WALL, k, 0.0) + @elapsed begin
+            run_one(algo, f, 10)                               # warm-up per (function, D): compile, discard
+            for (ri, rl) in enumerate(RUN_LENGTH), _ in 1:NTRIALS
+                fval, u, n = run_one(algo, f, rl)
+                success[fi, ri] += fval < f.f_opt + Δf
+                dist[fi, ri] += norm(u .- f.x_opt)
+                calls[fi, ri] += n
+            end
         end
     end
     success ./= NTRIALS * Nd
@@ -211,8 +216,8 @@ The CDF pools dimensions 3, 5 and 10.
 - **GPU optimizers**: a kernel cannot call `time()`, so the swarm is advanced in chunks of
   `TTS_CHUNK` iterations and the best cost is read back on the host in between. The swarm
   lives in the solver cache, so this is one continuous run with a time resolution of one
-  chunk. For `HybridPSO` the PSO phase is chunked the same way; if it never hits, the L-BFGS
-  phase runs from the final swarm and its finish time is used.
+  chunk. `HybridPSO` is timed end to end as it is used: `HYBRID_PSO_ITERS` PSO iterations,
+  then L-BFGS.
 
 The clock starts before the optimizer's own setup in every case, and one untimed warm-up run
 per (optimizer, function, dimension) keeps compilation out of the numbers, since the kernels
@@ -253,11 +258,8 @@ function time_to_success_one(algo, f::BBOBFunction)
         pso_solve(opt, pso_problem(g, f), MAX_TTS_ITERS)
         return hit[]
     elseif opt isa HybridPSO
-        cache = SciMLBase.init(pso_problem(x -> pso_objective(f, x), f), opt)
-        t = chunked!(cache.pso_cache, target, t0)             # PSO phase
-        isfinite(t) && return t
-        sol = SciMLBase.solve!(cache; maxiters = 0, local_maxiters = 300, abstol = 1.0e-8, reltol = 1.0e-8)
-        return _to_f64(sol.objective) < target ? time() - t0 : Inf   # L-BFGS phase only
+        sol = pso_solve(opt, pso_problem(x -> pso_objective(f, x), f), HYBRID_PSO_ITERS)
+        return _to_f64(sol.objective) < target ? time() - t0 : Inf
     else
         cache = SciMLBase.init(pso_problem(x -> pso_objective(f, x), f), opt)
         return chunked!(cache, target, t0)
@@ -267,9 +269,12 @@ end
 function time_to_success(algo)
     times = Float64[]
     for funcs in SUITES, f in funcs
-        time_to_success_one(algo, f)                       # warm-up per (function, D): compile, discard
-        for _ in 1:NTRIALS
-            push!(times, time_to_success_one(algo, f))
+        k = (algo, :tts, nameof(f.f))
+        WALL[k] = get(WALL, k, 0.0) + @elapsed begin
+            time_to_success_one(algo, f)                       # warm-up per (function, D): compile, discard
+            for _ in 1:NTRIALS
+                push!(times, time_to_success_one(algo, f))
+            end
         end
     end
     return times
@@ -291,6 +296,20 @@ using Printf
 for l in sort(collect(keys(results)))
     v = filter(isfinite, tts[l])
     @printf "%-28s final success = %.3f   solved = %3d/%d   median TTS = %s\n" l results[l].success_rate[end] length(v) length(tts[l]) (isempty(v) ? "never" : @sprintf("%.3f s", median(v)))
+end
+```
+
+```julia
+mins(pred) = sum((t for (k, t) in WALL if pred(k)); init = 0.0) / 60
+@printf "%-30s %9s %9s %9s\n" "solver" "budget" "tts" "total"
+for l in sort(LABELS; by = l -> -mins(k -> k[1] == l))
+    b, s = mins(k -> k[1:2] == (l, :budget)), mins(k -> k[1:2] == (l, :tts))
+    @printf "%-30s %8.1fm %8.1fm %8.1fm\n" l b s b + s
+end
+@printf "%-30s %29.1fm\n" "all" mins(_ -> true)
+println("\nTop 10 (solver, experiment, function):")
+for (k, t) in first(sort(collect(WALL); by = last, rev = true), 10)
+    @printf "  %-30s %-7s %-4s %7.1fm\n" k[1] k[2] k[3] t / 60
 end
 ```
 
